@@ -480,18 +480,20 @@ class TestApplyMixedSupervision:
 
     def test_integration_with_real_mixing_functions(self):
         """Integration test using real mixing functions (not mocked)."""
-        weak_ds, _ = create_dummy_datasets(n=100)
+        # Create weak dataset with seed 42
+        weak_ds, _ = create_dummy_datasets(n=100, seed=42)
 
         # Create a properly formatted mock for the original dataset
         with patch('weak_to_strong.datasets.load_dataset') as mock_load_dataset:
-            _, gt_ds = create_dummy_datasets(n=200, seed=123)
+            # Create ground truth dataset with SAME seed so 'txt' fields match
+            _, gt_ds = create_dummy_datasets(n=200, seed=42)
 
             # Mock the entire flow
             mock_train_dataset = gt_ds
             mock_original_dataset = {'train': mock_train_dataset}
             mock_load_dataset.return_value = mock_original_dataset
 
-            weak_model_config = {'seed': 123, 'n_docs': 200}
+            weak_model_config = {'seed': 42, 'n_docs': 200}
 
             # This should use real create_mixed_supervision_dataset
             result_ds, stats = apply_mixed_supervision(
