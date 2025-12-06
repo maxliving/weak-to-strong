@@ -19,12 +19,18 @@ class WandbLogger(object):
         self,
         **kwargs,
     ):
-        project = os.environ.get("WANDB_PROJECT")
-        self.use_wandb = project is not None
+        # Default to "weak-to-strong-mixing" if WANDB_PROJECT not set
+        project = os.environ.get("WANDB_PROJECT", "weak-to-strong-mixing")
+
+        # Allow disabling wandb with WANDB_MODE=disabled
+        wandb_mode = os.environ.get("WANDB_MODE", "online")
+        self.use_wandb = wandb_mode != "disabled"
+
         if self.use_wandb:
             wandb.init(
                 config=kwargs,
                 project=project,
+                mode=wandb_mode,
                 name=kwargs["name"].format(
                     **kwargs, datetime_now=datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
                 )
