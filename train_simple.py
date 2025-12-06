@@ -14,7 +14,6 @@ from weak_to_strong.common import get_tokenizer
 from weak_to_strong.datasets import (VALID_DATASETS, load_dataset,
                                      tokenize_dataset)
 from weak_to_strong.loss import logconf_loss_fn, product_loss_fn, xent_loss
-import pytest
 from weak_to_strong.train import ModelConfig, train_and_save_model
 
 # NOTE learning rates are not particularly tuned, work somewhat reasonably at train batch size 32
@@ -150,6 +149,111 @@ def get_config_foldername(config: dict) -> str:
     return "-".join(f"{shorten_key(k)}={shorten_value(v)}" for k, v in sorted(config.items()))
 
 
+def apply_mixed_supervision(
+    weak_labeled_ds,
+    ds_name: str,
+    weak_model_config: dict,
+    n_test_docs: int,
+    mix_ratio: float,
+    mix_strategy: str,
+    seed: int,
+):
+    """
+    Apply mixed supervision by combining weak labels with ground truth labels.
+
+    This function implements two mixing strategies:
+    1. Sample-level mixing: Randomly select mix_ratio fraction of examples to use
+       ground truth labels, rest use weak labels
+    2. Label-level mixing: Interpolate between weak and ground truth labels for
+       every example: soft_label = (1-α)*weak + α*gt
+
+    Args:
+        weak_labeled_ds: Dataset with weak labels (soft_label field)
+        ds_name: Name of the dataset to load ground truth from
+        weak_model_config: Config dict used to train the weak model (contains seed, n_docs)
+        n_test_docs: Number of test documents
+        mix_ratio: Fraction of ground truth labels to mix in (0.0 to 1.0)
+        mix_strategy: 'sample' for sample-level or 'label' for label-level mixing
+        seed: Random seed for reproducibility
+
+    Returns:
+        Tuple of (mixed_dataset, mixing_stats_dict)
+        - mixed_dataset: Dataset with mixed supervision
+        - mixing_stats_dict: Statistics about the mixing (for logging)
+    """
+    if mix_ratio <= 0.0:
+        return weak_labeled_ds, {}
+
+    print(f"\n{'='*60}")
+    print(f"MIXED SUPERVISION")
+    print(f"{'='*60}")
+    print(f"Strategy: {mix_strategy}")
+    print(f"Ground truth: {mix_ratio*100:.1f}%")
+    print(f"Weak labels: {(1-mix_ratio)*100:.1f}%")
+    print(f"{'='*60}\n")
+
+    # Need to reload the original ground truth dataset and split it the same way
+    # to get train2_ds with ground truth labels
+    print("Loading original dataset for ground truth labels...")
+    original_dataset = load_dataset(
+        ds_name,
+        seed=weak_model_config.get('seed', seed),
+        split_sizes=dict(
+            train=weak_model_config.get('n_docs'),
+            test=n_test_docs
+        )
+    )
+    # Split the same way the weak labels were generated
+    original_split = original_dataset['train'].train_test_split(
+        test_size=0.5,
+        seed=weak_model_config.get('seed', seed)
+    )
+    train2_ds_gt = original_split['test']  # Ground truth version of train2
+
+    # Apply mixing using the mixing module
+    from weak_to_strong.mixing import create_mixed_supervision_dataset
+    mixed_ds = create_mixed_supervision_dataset(
+        weak_labeled_ds=weak_labeled_ds,
+        ground_truth_ds=train2_ds_gt,
+        mix_ratio=mix_ratio,
+        mix_strategy=mix_strategy,
+        seed=seed
+    )
+
+    # Compute and print mixing statistics
+    mixing_stats = {}
+    if mix_strategy == 'sample' and 'label_source' in mixed_ds.column_names:
+        gt_count = sum(1 for x in mixed_ds if x['label_source'] == 'ground_truth')
+        actual_gt_fraction = gt_count / len(mixed_ds)
+        print(f"Sample-level mixing: {gt_count}/{len(mixed_ds)} examples use ground truth "
+              f"({actual_gt_fraction*100:.1f}%)\n")
+
+        mixing_stats = {
+            'mixing/gt_examples': gt_count,
+            'mixing/weak_examples': len(mixed_ds) - gt_count,
+            'mixing/actual_gt_fraction': actual_gt_fraction,
+            'mixing/requested_gt_fraction': mix_ratio,
+        }
+    elif mix_strategy == 'label':
+        # For label-level mixing, compute average label entropy
+        entropies = []
+        for example in mixed_ds:
+            probs = np.array(example['soft_label'])
+            # Avoid log(0) by adding small epsilon
+            entropy = -np.sum(probs * np.log(probs + 1e-10))
+            entropies.append(entropy)
+        avg_entropy = np.mean(entropies)
+        print(f"Label-level mixing: Average label entropy = {avg_entropy:.3f}\n")
+
+        mixing_stats = {
+            'mixing/avg_label_entropy': avg_entropy,
+            'mixing/min_label_entropy': np.min(entropies),
+            'mixing/max_label_entropy': np.max(entropies),
+        }
+
+    return mixed_ds, mixing_stats
+
+
 def main(
     batch_size: int = 32,
     max_ctx: int = 1024,
@@ -255,7 +359,20 @@ def main(
     # Split the training dataset in half
     train_dataset, test_ds = dataset["train"], dataset["test"]
 
+    # ============================================================================
+    # TWO EXECUTION PATHS:
+    # 1. Ground truth split (weak_labels_path=None):
+    #    - Split train data in half: train1 for training, train2 for weak label generation
+    #    - No mixing applied
+    #
+    # 2. Weak supervision (weak_labels_path provided):
+    #    - Load pre-computed weak labels from disk
+    #    - Optionally apply mixed supervision (combining weak + ground truth)
+    # ============================================================================
+
     if weak_labels_path is None:
+        # PATH 1: Ground truth split
+        # Split the training data in half for standard weak-to-strong setup
         split_data = train_dataset.train_test_split(test_size=0.5, seed=seed)
         train1_ds, train2_ds = split_data["train"], split_data["test"]
         print("\n" + "="*60)
@@ -268,6 +385,8 @@ def main(
         config_name = get_config_foldername(config)
         mixing_stats = {}  # No mixing in this case
     else:
+        # PATH 2: Weak supervision with optional mixing
+        # Load pre-computed weak labels from a previously trained weak model
         if not weak_labels_path.endswith("weak_labels"):
             weak_labels_path = weak_labels_path + "/weak_labels"
         if sync_command is not None:
@@ -279,84 +398,26 @@ def main(
             result = subprocess.run(sync_command_list, check=True)
             if result.returncode != 0:
                 raise RuntimeError(f"Sync command failed with return code {result.returncode}")
-        train1_ds = load_from_disk(weak_labels_path)
-        train2_ds = None
 
+        # Load weak labels dataset
+        train1_ds = load_from_disk(weak_labels_path)
+        train2_ds = None  # Not needed when using pre-computed weak labels
+
+        # Load weak model configuration
         weak_model_config = json.load(open(weak_labels_path.replace("weak_labels", "config.json")))
         config["weak_model_size"] = weak_model_config["model_size"]
 
-        # Apply mixed supervision if requested
-        if mix_ratio > 0.0:
-            print(f"\n{'='*60}")
-            print(f"MIXED SUPERVISION")
-            print(f"{'='*60}")
-            print(f"Strategy: {mix_strategy}")
-            print(f"Ground truth: {mix_ratio*100:.1f}%")
-            print(f"Weak labels: {(1-mix_ratio)*100:.1f}%")
-            print(f"{'='*60}\n")
-
-            # Need to reload the original ground truth dataset and split it the same way
-            # to get train2_ds with ground truth labels
-            print("Loading original dataset for ground truth labels...")
-            original_dataset = load_dataset(
-                ds_name,
-                seed=weak_model_config.get('seed', seed),
-                split_sizes=dict(
-                    train=weak_model_config.get('n_docs', n_docs),
-                    test=n_test_docs
-                )
-            )
-            # Split the same way the weak labels were generated
-            original_split = original_dataset['train'].train_test_split(
-                test_size=0.5,
-                seed=weak_model_config.get('seed', seed)
-            )
-            train2_ds_gt = original_split['test']  # Ground truth version of train2
-
-            # Apply mixing
-            from weak_to_strong.mixing import create_mixed_supervision_dataset
-            train1_ds = create_mixed_supervision_dataset(
-                weak_labeled_ds=train1_ds,
-                ground_truth_ds=train2_ds_gt,
-                mix_ratio=mix_ratio,
-                mix_strategy=mix_strategy,
-                seed=seed
-            )
-
-            # Compute and print mixing statistics (will log to wandb after logger is configured)
-            mixing_stats = {}
-            if mix_strategy == 'sample' and 'label_source' in train1_ds.column_names:
-                gt_count = sum(1 for x in train1_ds if x['label_source'] == 'ground_truth')
-                actual_gt_fraction = gt_count / len(train1_ds)
-                print(f"Sample-level mixing: {gt_count}/{len(train1_ds)} examples use ground truth "
-                      f"({actual_gt_fraction*100:.1f}%)\n")
-
-                # Store for later logging
-                mixing_stats = {
-                    'mixing/gt_examples': gt_count,
-                    'mixing/weak_examples': len(train1_ds) - gt_count,
-                    'mixing/actual_gt_fraction': actual_gt_fraction,
-                    'mixing/requested_gt_fraction': mix_ratio,
-                }
-            elif mix_strategy == 'label':
-                # For label-level mixing, compute average label entropy
-                entropies = []
-                for example in train1_ds:
-                    probs = np.array(example['soft_label'])
-                    # Avoid log(0) by adding small epsilon
-                    entropy = -np.sum(probs * np.log(probs + 1e-10))
-                    entropies.append(entropy)
-                avg_entropy = np.mean(entropies)
-                print(f"Label-level mixing: Average label entropy = {avg_entropy:.3f}\n")
-
-                # Store for later logging
-                mixing_stats = {
-                    'mixing/avg_label_entropy': avg_entropy,
-                    'mixing/min_label_entropy': np.min(entropies),
-                    'mixing/max_label_entropy': np.max(entropies),
-                }
-        else:
-            mixing_stats = {}
+        # Optionally apply mixed supervision (combining weak labels + ground truth)
+        # If mix_ratio=0.0, this returns the weak labels unchanged
+        train1_ds, mixing_stats = apply_mixed_supervision(
+            weak_labeled_ds=train1_ds,
+            ds_name=ds_name,
+            weak_model_config=weak_model_config,
+            n_test_docs=n_test_docs,
+            mix_ratio=mix_ratio,
+            mix_strategy=mix_strategy,
+            seed=seed,
+        )
 
         config_name = get_config_foldername(config)
         config["weak_model"] = weak_model_config
