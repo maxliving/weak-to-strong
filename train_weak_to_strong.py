@@ -199,6 +199,9 @@ def main(
     train1_ds, train2_ds = split_data["train"], split_data["test"]
     print("len(train1):", len(train1_ds), "len(train2):", len(train2_ds))
 
+    # Initialize mixing_stats (will be populated later if mixing is used)
+    mixing_stats = {}
+
     def train_model(
         model_config: ModelConfig,
         train_ds: torch.utils.data.Dataset,
@@ -236,6 +239,13 @@ def main(
             mix_ratio=mix_ratio,
             mix_strategy=mix_strategy,
         )
+
+        # Log mixing statistics if this is a transfer model and we have mixing stats
+        # (mixing_stats is defined in outer scope)
+        if label == "weak2strong" and mixing_stats:
+            logger.logkvs(mixing_stats)
+            logger.dumpkvs()
+
         # Tokenize datasets
         tokenizer = get_tokenizer(model_config.name)
         train_ds = tokenize_dataset(train_ds, tokenizer, max_ctx)
@@ -298,6 +308,7 @@ def main(
     )
 
     # Apply mixed supervision if requested
+    mixing_stats = {}
     if mix_ratio > 0.0:
         print(f"\n{'='*60}")
         print(f"MIXED SUPERVISION")
@@ -317,23 +328,22 @@ def main(
             seed=seed
         )
 
-        # Log mixing statistics
+        # Compute and print mixing statistics (will log to wandb in transfer model training)
         if mix_strategy == 'sample' and 'label_source' in mixed_ds.column_names:
             gt_count = sum(1 for x in mixed_ds if x['label_source'] == 'ground_truth')
             actual_gt_fraction = gt_count / len(mixed_ds)
             print(f"Sample-level mixing: {gt_count}/{len(mixed_ds)} examples use ground truth "
                   f"({actual_gt_fraction*100:.1f}%)")
 
-            # Log to wandb
-            logger.logkvs({
+            # Store for logging in transfer model context
+            mixing_stats = {
                 'mixing/gt_examples': gt_count,
                 'mixing/weak_examples': len(mixed_ds) - gt_count,
                 'mixing/actual_gt_fraction': actual_gt_fraction,
                 'mixing/requested_gt_fraction': mix_ratio,
-            })
+            }
         elif mix_strategy == 'label':
             # For label-level mixing, compute average label entropy
-            import numpy as np
             entropies = []
             for example in mixed_ds:
                 probs = np.array(example['soft_label'])
@@ -343,14 +353,12 @@ def main(
             avg_entropy = np.mean(entropies)
             print(f"Label-level mixing: Average label entropy = {avg_entropy:.3f}")
 
-            # Log to wandb
-            logger.logkvs({
+            # Store for logging in transfer model context
+            mixing_stats = {
                 'mixing/avg_label_entropy': avg_entropy,
                 'mixing/min_label_entropy': np.min(entropies),
                 'mixing/max_label_entropy': np.max(entropies),
-            })
-
-        logger.dumpkvs()
+            }
 
         transfer_train_ds = mixed_ds
     else:

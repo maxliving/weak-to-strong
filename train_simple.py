@@ -250,6 +250,7 @@ def main(
         print(f"test (for evaluation): {len(test_ds)} examples")
         print("="*60 + "\n")
         config_name = get_config_foldername(config)
+        mixing_stats = {}  # No mixing in this case
     else:
         if not weak_labels_path.endswith("weak_labels"):
             weak_labels_path = weak_labels_path + "/weak_labels"
@@ -306,20 +307,21 @@ def main(
                 seed=seed
             )
 
-            # Log mixing statistics
+            # Compute and print mixing statistics (will log to wandb after logger is configured)
+            mixing_stats = {}
             if mix_strategy == 'sample' and 'label_source' in train1_ds.column_names:
                 gt_count = sum(1 for x in train1_ds if x['label_source'] == 'ground_truth')
                 actual_gt_fraction = gt_count / len(train1_ds)
                 print(f"Sample-level mixing: {gt_count}/{len(train1_ds)} examples use ground truth "
                       f"({actual_gt_fraction*100:.1f}%)\n")
 
-                # Log to wandb
-                logger.logkvs({
+                # Store for later logging
+                mixing_stats = {
                     'mixing/gt_examples': gt_count,
                     'mixing/weak_examples': len(train1_ds) - gt_count,
                     'mixing/actual_gt_fraction': actual_gt_fraction,
                     'mixing/requested_gt_fraction': mix_ratio,
-                })
+                }
             elif mix_strategy == 'label':
                 # For label-level mixing, compute average label entropy
                 entropies = []
@@ -331,17 +333,17 @@ def main(
                 avg_entropy = np.mean(entropies)
                 print(f"Label-level mixing: Average label entropy = {avg_entropy:.3f}\n")
 
-                # Log to wandb
-                logger.logkvs({
+                # Store for later logging
+                mixing_stats = {
                     'mixing/avg_label_entropy': avg_entropy,
                     'mixing/min_label_entropy': np.min(entropies),
                     'mixing/max_label_entropy': np.max(entropies),
-                })
-
-            logger.dumpkvs()
+                }
 
             config["mix_ratio"] = mix_ratio
             config["mix_strategy"] = mix_strategy
+        else:
+            mixing_stats = {}
 
         config_name = get_config_foldername(config)
         config["weak_model"] = weak_model_config
@@ -354,6 +356,12 @@ def main(
         config_name=config_name,
         **config,  # Pass all config params to wandb
     )
+
+    # Log mixing statistics to wandb (if any)
+    if mixing_stats:
+        logger.logkvs(mixing_stats)
+        logger.dumpkvs()
+
     # Tokenize datasets
     tokenizer = get_tokenizer(model_config.name)
     train1_ds = tokenize_dataset(train1_ds, tokenizer, max_ctx)
