@@ -28,3 +28,8 @@ dependencies=[
   "torch_optimizer ~= 0.3",
   "wandb ~= 0.16.1"
 ]
+
+[project.optional-dependencies]
+dev = [
+  "pytest >= 7.0.0",
+]

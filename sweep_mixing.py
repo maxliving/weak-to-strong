@@ -22,7 +22,7 @@ import fire
 def sweep_mix_ratios(
     mix_ratios: str = "0.0,0.1,0.25,0.5,0.75,1.0",
     mix_strategy: str = "sample",
-    base_script: str = "train_weak_to_strong.py",
+    base_script: str = "train_simple.py",
     **kwargs
 ):
     """
@@ -31,14 +31,26 @@ def sweep_mix_ratios(
     Args:
         mix_ratios: Comma-separated list of mixing ratios to try (e.g., "0,0.25,0.5,1.0")
         mix_strategy: Mixing strategy - 'sample' or 'label'
-        base_script: Script to run (default: train_weak_to_strong.py)
+        base_script: Script to run (default: train_simple.py)
         **kwargs: Additional arguments to pass to the training script
-                  (e.g., ds_name='sciq', n_docs=10000, weak_model_size='gpt2')
+                  For train_simple.py: model_size, ds_name, weak_labels_path (required), etc.
+                  For train_weak_to_strong.py: weak_model_size, strong_model_size, etc.
 
-    Example:
+    Examples:
+        # Using train_simple.py (recommended)
         sweep_mix_ratios(
             mix_ratios="0,0.25,0.5,1.0",
             mix_strategy="sample",
+            model_size="gpt2-medium",
+            ds_name="sciq",
+            weak_labels_path="/tmp/results/default/{config}/weak_labels"
+        )
+
+        # Using train_weak_to_strong.py (all-in-one)
+        sweep_mix_ratios(
+            mix_ratios="0,0.25,0.5,1.0",
+            mix_strategy="sample",
+            base_script="train_weak_to_strong.py",
             ds_name="sciq",
             n_docs=10000,
             weak_model_size="gpt2",

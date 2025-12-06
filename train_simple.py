@@ -170,6 +170,9 @@ def main(
     # still do final evals (which requires eval_every to be set to a non-zero, non-None value)
     eval_every: int = 1000000,
     sync_command: Optional[str] = None,
+    # Mixed supervision parameters
+    mix_ratio: float = 0.0,  # Fraction of ground truth labels to mix in (0.0 to 1.0)
+    mix_strategy: str = 'sample',  # 'sample' for sample-level or 'label' for label-level mixing
 ):
     # this is per device!
     if minibatch_size_per_device is None:
@@ -264,6 +267,54 @@ def main(
 
         weak_model_config = json.load(open(weak_labels_path.replace("weak_labels", "config.json")))
         config["weak_model_size"] = weak_model_config["model_size"]
+
+        # Apply mixed supervision if requested
+        if mix_ratio > 0.0:
+            print(f"\n{'='*60}")
+            print(f"MIXED SUPERVISION")
+            print(f"{'='*60}")
+            print(f"Strategy: {mix_strategy}")
+            print(f"Ground truth: {mix_ratio*100:.1f}%")
+            print(f"Weak labels: {(1-mix_ratio)*100:.1f}%")
+            print(f"{'='*60}\n")
+
+            # Need to reload the original ground truth dataset and split it the same way
+            # to get train2_ds with ground truth labels
+            print("Loading original dataset for ground truth labels...")
+            original_dataset = load_dataset(
+                ds_name,
+                seed=weak_model_config.get('seed', seed),
+                split_sizes=dict(
+                    train=weak_model_config.get('n_docs', n_docs),
+                    test=n_test_docs
+                )
+            )
+            # Split the same way the weak labels were generated
+            original_split = original_dataset['train'].train_test_split(
+                test_size=0.5,
+                seed=weak_model_config.get('seed', seed)
+            )
+            train2_ds_gt = original_split['test']  # Ground truth version of train2
+
+            # Apply mixing
+            from weak_to_strong.mixing import create_mixed_supervision_dataset
+            train1_ds = create_mixed_supervision_dataset(
+                weak_labeled_ds=train1_ds,
+                ground_truth_ds=train2_ds_gt,
+                mix_ratio=mix_ratio,
+                mix_strategy=mix_strategy,
+                seed=seed
+            )
+
+            # Log mixing statistics
+            if mix_strategy == 'sample' and 'label_source' in train1_ds.column_names:
+                gt_count = sum(1 for x in train1_ds if x['label_source'] == 'ground_truth')
+                print(f"Sample-level mixing: {gt_count}/{len(train1_ds)} examples use ground truth "
+                      f"({gt_count/len(train1_ds)*100:.1f}%)\n")
+
+            config["mix_ratio"] = mix_ratio
+            config["mix_strategy"] = mix_strategy
+
         config_name = get_config_foldername(config)
         config["weak_model"] = weak_model_config
 

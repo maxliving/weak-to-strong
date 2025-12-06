@@ -22,6 +22,11 @@ You need to have Python installed on your machine. The project uses `pyproject.t
 pip install .
 ```
 
+For development (includes testing tools):
+```
+pip install ".[dev]"
+```
+
 #### Running the Script
 
 The main script of the project is `sweep.py`. It can be run from the command line using the following command:
@@ -56,34 +61,67 @@ At the time of release, the main script was called `train_weak_to_strong.py`, bu
 
 This codebase supports **mixed supervision**: training strong models with a combination of weak model predictions and ground truth labels. This enables studying how a small "supervision budget" of expensive ground truth labels can improve weak-to-strong generalization.
 
-Two mixing strategies are supported:
+**Workflow**: Mixed supervision requires two steps:
 
-**Sample-level mixing** (`--mix_strategy=sample`): Randomly select a fraction of examples to use ground truth labels, while the rest use weak labels.
+1. **Generate weak labels** (train a weak model and generate predictions):
+```bash
+python train_simple.py --model_size=gpt2 --ds_name=sciq --n_docs=10000
+# This creates weak labels at: /tmp/results/default/{config}/weak_labels
+```
+
+2. **Train with mixed supervision** (combine weak labels with ground truth):
+```bash
+python train_simple.py \
+    --model_size=gpt2-medium \
+    --ds_name=sciq \
+    --weak_labels_path=/tmp/results/default/{config}/weak_labels \
+    --mix_ratio=0.25 \
+    --mix_strategy=sample
+```
+
+**Two mixing strategies**:
+
+- **Sample-level mixing** (`--mix_strategy=sample`): Randomly select `mix_ratio` fraction of examples to use ground truth labels, rest use weak labels
+- **Label-level mixing** (`--mix_strategy=label`): Interpolate between weak and ground truth labels for every example: `soft_label = (1-α)*weak + α*gt`
+
+**Automated sweeps**: Use `sweep_mixing.py` to run experiments across multiple mixing ratios:
+```bash
+# First generate weak labels
+python train_simple.py --model_size=gpt2 --ds_name=sciq --n_docs=10000
+
+# Then sweep over mixing ratios
+python sweep_mixing.py \
+    --mix_ratios="0,0.25,0.5,0.75,1.0" \
+    --mix_strategy=sample \
+    --model_size=gpt2-medium \
+    --ds_name=sciq \
+    --weak_labels_path=/tmp/results/default/{config}/weak_labels
+```
+
+The `mix_ratio` parameter controls the fraction of ground truth labels (0.0 = pure weak supervision, 1.0 = pure ground truth).
+
+**Alternative**: For quick experiments, use `train_weak_to_strong.py` which trains weak, strong, and transfer models in one run:
 ```bash
 python train_weak_to_strong.py \
     --mix_ratio=0.25 --mix_strategy=sample \
     --ds_name=sciq --n_docs=10000 \
-    --weak_model_size=gpt2 --strong_model_size=gpt2-xl
+    --weak_model_size=gpt2 --strong_model_size=gpt2-medium
 ```
 
-**Label-level mixing** (`--mix_strategy=label`): Interpolate between weak and ground truth labels for every example: `soft_label = (1-α)*weak + α*gt`
+#### Testing
+
+To run the unit tests for the mixed supervision functionality:
+
 ```bash
-python train_weak_to_strong.py \
-    --mix_ratio=0.25 --mix_strategy=label \
-    --ds_name=sciq --n_docs=10000 \
-    --weak_model_size=gpt2 --strong_model_size=gpt2-xl
-```
+# Install dev dependencies first
+pip install ".[dev]"
 
-**Running mixing sweeps**: Use `sweep_mixing.py` to automatically run experiments across multiple mixing ratios:
-```bash
-python sweep_mixing.py \
-    --mix_ratios="0,0.25,0.5,0.75,1.0" \
-    --mix_strategy=sample \
-    --ds_name=sciq --n_docs=20000 \
-    --weak_model_size=gpt2-medium --strong_model_size=gpt2-xl
-```
+# Run tests
+pytest tests/test_mixing.py -v
 
-The `mix_ratio` parameter controls the fraction of ground truth labels (0.0 = pure weak supervision, 1.0 = pure ground truth). This allows studying the sample efficiency of weak-to-strong generalization and optimal supervision budget allocation.
+# Or run all tests
+pytest tests/ -v
+```
 
 #### Expected results
 
