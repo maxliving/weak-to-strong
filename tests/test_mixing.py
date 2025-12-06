@@ -11,9 +11,9 @@ from weak_to_strong.mixing import (
     mix_datasets_sample_level,
     mix_datasets_label_level,
     create_mixed_supervision_dataset,
-    validate_mixing
+    validate_mixing,
+    apply_mixed_supervision
 )
-from train_simple import apply_mixed_supervision
 
 
 def create_dummy_datasets(n=100, seed=42):
@@ -314,7 +314,7 @@ class TestApplyMixedSupervision:
         # Stats should be empty
         assert stats == {}
 
-    @patch('train_simple.load_dataset')
+    @patch('weak_to_strong.mixing.load_dataset')
     def test_sample_level_mixing_stats(self, mock_load_dataset):
         """Test that sample-level mixing computes correct statistics."""
         weak_ds, gt_ds = create_dummy_datasets(n=100)
@@ -329,7 +329,7 @@ class TestApplyMixedSupervision:
 
         weak_model_config = {'seed': 42, 'n_docs': 200}
 
-        with patch('train_simple.create_mixed_supervision_dataset') as mock_create:
+        with patch('weak_to_strong.mixing.create_mixed_supervision_dataset') as mock_create:
             # Create a mock mixed dataset with label_source field
             mock_mixed = weak_ds.add_column('label_source',
                 ['ground_truth'] * 25 + ['weak'] * 75)
@@ -356,7 +356,7 @@ class TestApplyMixedSupervision:
             assert stats['mixing/actual_gt_fraction'] == 0.25
             assert stats['mixing/requested_gt_fraction'] == 0.25
 
-    @patch('train_simple.load_dataset')
+    @patch('weak_to_strong.mixing.load_dataset')
     def test_label_level_mixing_stats(self, mock_load_dataset):
         """Test that label-level mixing computes entropy statistics."""
         weak_ds, gt_ds = create_dummy_datasets(n=100)
@@ -371,7 +371,7 @@ class TestApplyMixedSupervision:
 
         weak_model_config = {'seed': 42, 'n_docs': 200}
 
-        with patch('train_simple.create_mixed_supervision_dataset') as mock_create:
+        with patch('weak_to_strong.mixing.create_mixed_supervision_dataset') as mock_create:
             # Create a mock mixed dataset with interpolated labels
             mock_mixed = Dataset.from_dict({
                 'txt': [f'example_{i}' for i in range(100)],
@@ -398,8 +398,8 @@ class TestApplyMixedSupervision:
             # Entropy should be positive for non-deterministic labels
             assert stats['mixing/avg_label_entropy'] > 0
 
-    @patch('train_simple.load_dataset')
-    @patch('train_simple.create_mixed_supervision_dataset')
+    @patch('weak_to_strong.mixing.load_dataset')
+    @patch('weak_to_strong.mixing.create_mixed_supervision_dataset')
     def test_loads_ground_truth_correctly(self, mock_create, mock_load_dataset):
         """Test that ground truth dataset is loaded with correct parameters."""
         weak_ds, gt_ds = create_dummy_datasets(n=100)
@@ -439,8 +439,8 @@ class TestApplyMixedSupervision:
             )
         )
 
-    @patch('train_simple.load_dataset')
-    @patch('train_simple.create_mixed_supervision_dataset')
+    @patch('weak_to_strong.mixing.load_dataset')
+    @patch('weak_to_strong.mixing.create_mixed_supervision_dataset')
     def test_dataset_split_consistency(self, mock_create, mock_load_dataset):
         """Test that dataset is split the same way as weak labels were generated."""
         weak_ds, _ = create_dummy_datasets(n=100)
@@ -483,7 +483,7 @@ class TestApplyMixedSupervision:
         weak_ds, _ = create_dummy_datasets(n=100)
 
         # Create a properly formatted mock for the original dataset
-        with patch('train_simple.load_dataset') as mock_load_dataset:
+        with patch('weak_to_strong.mixing.load_dataset') as mock_load_dataset:
             _, gt_ds = create_dummy_datasets(n=200, seed=123)
 
             # Mock the entire flow

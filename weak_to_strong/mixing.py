@@ -282,3 +282,111 @@ def validate_mixing(
     results['avg_label_entropy'] = float(np.mean(entropies))
 
     return results
+
+
+def apply_mixed_supervision(
+    weak_labeled_ds: Dataset,
+    ds_name: str,
+    weak_model_config: dict,
+    n_test_docs: int,
+    mix_ratio: float,
+    mix_strategy: str,
+    seed: int,
+):
+    """
+    Apply mixed supervision by combining weak labels with ground truth labels.
+
+    This function implements two mixing strategies:
+    1. Sample-level mixing: Randomly select mix_ratio fraction of examples to use
+       ground truth labels, rest use weak labels
+    2. Label-level mixing: Interpolate between weak and ground truth labels for
+       every example: soft_label = (1-α)*weak + α*gt
+
+    Args:
+        weak_labeled_ds: Dataset with weak labels (soft_label field)
+        ds_name: Name of the dataset to load ground truth from
+        weak_model_config: Config dict used to train the weak model (contains seed, n_docs)
+        n_test_docs: Number of test documents
+        mix_ratio: Fraction of ground truth labels to mix in (0.0 to 1.0)
+        mix_strategy: 'sample' for sample-level or 'label' for label-level mixing
+        seed: Random seed for reproducibility
+
+    Returns:
+        Tuple of (mixed_dataset, mixing_stats_dict)
+        - mixed_dataset: Dataset with mixed supervision
+        - mixing_stats_dict: Statistics about the mixing (for logging)
+    """
+    if mix_ratio <= 0.0:
+        return weak_labeled_ds, {}
+
+    print(f"\n{'='*60}")
+    print(f"MIXED SUPERVISION")
+    print(f"{'='*60}")
+    print(f"Strategy: {mix_strategy}")
+    print(f"Ground truth: {mix_ratio*100:.1f}%")
+    print(f"Weak labels: {(1-mix_ratio)*100:.1f}%")
+    print(f"{'='*60}\n")
+
+    # Need to reload the original ground truth dataset and split it the same way
+    # to get train2_ds with ground truth labels
+    print("Loading original dataset for ground truth labels...")
+
+    # Import here to avoid circular dependency
+    from weak_to_strong.datasets import load_dataset
+
+    original_dataset = load_dataset(
+        ds_name,
+        seed=weak_model_config.get('seed', seed),
+        split_sizes=dict(
+            train=weak_model_config.get('n_docs'),
+            test=n_test_docs
+        )
+    )
+    # Split the same way the weak labels were generated
+    original_split = original_dataset['train'].train_test_split(
+        test_size=0.5,
+        seed=weak_model_config.get('seed', seed)
+    )
+    train2_ds_gt = original_split['test']  # Ground truth version of train2
+
+    # Apply mixing using the mixing module
+    mixed_ds = create_mixed_supervision_dataset(
+        weak_labeled_ds=weak_labeled_ds,
+        ground_truth_ds=train2_ds_gt,
+        mix_ratio=mix_ratio,
+        mix_strategy=mix_strategy,
+        seed=seed
+    )
+
+    # Compute and print mixing statistics
+    mixing_stats = {}
+    if mix_strategy == 'sample' and 'label_source' in mixed_ds.column_names:
+        gt_count = sum(1 for x in mixed_ds if x['label_source'] == 'ground_truth')
+        actual_gt_fraction = gt_count / len(mixed_ds)
+        print(f"Sample-level mixing: {gt_count}/{len(mixed_ds)} examples use ground truth "
+              f"({actual_gt_fraction*100:.1f}%)\n")
+
+        mixing_stats = {
+            'mixing/gt_examples': gt_count,
+            'mixing/weak_examples': len(mixed_ds) - gt_count,
+            'mixing/actual_gt_fraction': actual_gt_fraction,
+            'mixing/requested_gt_fraction': mix_ratio,
+        }
+    elif mix_strategy == 'label':
+        # For label-level mixing, compute average label entropy
+        entropies = []
+        for example in mixed_ds:
+            probs = np.array(example['soft_label'])
+            # Avoid log(0) by adding small epsilon
+            entropy = -np.sum(probs * np.log(probs + 1e-10))
+            entropies.append(entropy)
+        avg_entropy = np.mean(entropies)
+        print(f"Label-level mixing: Average label entropy = {avg_entropy:.3f}\n")
+
+        mixing_stats = {
+            'mixing/avg_label_entropy': avg_entropy,
+            'mixing/min_label_entropy': np.min(entropies),
+            'mixing/max_label_entropy': np.max(entropies),
+        }
+
+    return mixed_ds, mixing_stats
