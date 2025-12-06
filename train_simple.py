@@ -239,7 +239,13 @@ def main(
     if weak_labels_path is None:
         split_data = train_dataset.train_test_split(test_size=0.5, seed=seed)
         train1_ds, train2_ds = split_data["train"], split_data["test"]
-        print("len(train1):", len(train1_ds), "len(train2):", len(train2_ds))
+        print("\n" + "="*60)
+        print("DATA SPLIT")
+        print("="*60)
+        print(f"train1 (for training): {len(train1_ds)} examples")
+        print(f"train2 (held-out for weak labels): {len(train2_ds)} examples")
+        print(f"test (for evaluation): {len(test_ds)} examples")
+        print("="*60 + "\n")
         config_name = get_config_foldername(config)
     else:
         if not weak_labels_path.endswith("weak_labels"):
@@ -276,7 +282,15 @@ def main(
         train2_ds = tokenize_dataset(train2_ds, tokenizer, max_ctx)
 
     loss_fn = loss_dict[loss]
-    print(f"Training model model, size {model_size}")
+    print("\n" + "="*60)
+    print("STARTING TRAINING")
+    print("="*60)
+    print(f"Model: {model_size}")
+    print(f"Loss function: {loss}")
+    print(f"Learning rate: {lr}")
+    print(f"Batch size: {batch_size}")
+    print(f"Epochs: {epochs}")
+    print("="*60 + "\n")
     test_results, weak_ds = train_and_save_model(
         model_config,
         train1_ds,
@@ -299,10 +313,19 @@ def main(
 
     if weak_ds is not None:
         weak_ds.save_to_disk(save_path + "/" + "weak_labels")
+        print(f"Saved weak labels to: {save_path}/weak_labels")
 
     acc = np.mean([x["acc"] for x in test_results])
     res_dict = {"accuracy": acc}
-    print("accuracy:", acc)
+    print("\n" + "="*60)
+    print("FINAL RESULTS SUMMARY")
+    print("="*60)
+    print(f"Test Set Accuracy: {acc:.3f}")
+    print(f"Training examples used: {len(train1_ds)}")
+    print(f"Test examples: {n_test_docs}")
+    print(f"Model: {model_size}")
+    print(f"Results saved to: {save_path}")
+    print("="*60)
 
     with open(os.path.join(save_path, f"config.json"), "w") as f:
         json.dump(config, f, indent=2)

@@ -14,13 +14,15 @@ def unpack(x):
     return x.detach().float().cpu().numpy().tolist()
 
 
-def eval_model_acc(model: nn.Module, ds: datasets.Dataset, eval_batch_size: int = 16) -> None:
+def eval_model_acc(model: nn.Module, ds: datasets.Dataset, eval_batch_size: int = 16, dataset_name: str = "dataset") -> None:
     """
     This function evaluates the accuracy of a given model on a given dataset.
 
     Parameters:
     model (nn.Module): The model to be evaluated.
     ds (datasets.Dataset): The dataset on which the model is to be evaluated.
+    eval_batch_size (int): Batch size for evaluation.
+    dataset_name (str): Name of the dataset being evaluated (for logging).
 
     Returns:
     results (list): A list of dictionaries containing the input_ids, ground truth label, predicted label,
@@ -64,6 +66,8 @@ def eval_model_acc(model: nn.Module, ds: datasets.Dataset, eval_batch_size: int 
                 ]
             )
         accs = [r["acc"] for r in results]
-        print("Accuracy:", np.mean(accs), "+/-", np.std(accs) / np.sqrt(len(accs)))
+        mean_acc = np.mean(accs)
+        std_err = np.std(accs) / np.sqrt(len(accs))
+        print(f"[{dataset_name}] Accuracy: {mean_acc:.3f} +/- {std_err:.3f} (n={len(accs)})")
 
         return datasets.Dataset.from_list(results)

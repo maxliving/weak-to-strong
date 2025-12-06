@@ -157,8 +157,8 @@ def train_model(
         logger.dumpkvs()
     final_eval_results = None
     if eval_every:
-        print("Final evaluation:")
-        final_eval_results = eval_model_acc(model, eval_ds, eval_batch_size)
+        print("\n=== Final Model Evaluation ===")
+        final_eval_results = eval_model_acc(model, eval_ds, eval_batch_size, dataset_name="test set")
         logger.logkv("eval_accuracy", np.mean([r["acc"] for r in final_eval_results]))
         logger.dumpkvs()
     return final_eval_results
@@ -246,7 +246,8 @@ def train_and_save_model(
             minibatch_size = minibatch_size_per_device
 
     if already_trained:
-        test_results = eval_model_acc(model, test_ds, eval_batch_size)
+        print("\n=== Evaluating Pre-trained Model ===")
+        test_results = eval_model_acc(model, test_ds, eval_batch_size, dataset_name="test set")
     else:
         start = time.time()
         test_results = train_model(
@@ -275,7 +276,8 @@ def train_and_save_model(
 
     inference_results = None
     if inference_ds:
-        inference_results = eval_model_acc(model, inference_ds, eval_batch_size)
+        print("\n=== Generating Weak Labels (Inference on held-out train split) ===")
+        inference_results = eval_model_acc(model, inference_ds, eval_batch_size, dataset_name="train2 (held-out)")
         logger.logkv("inference_accuracy", np.mean([r["acc"] for r in inference_results]))
 
     if save_path:
