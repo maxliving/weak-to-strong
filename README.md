@@ -52,6 +52,39 @@ An example of Jupyter notebook for plotting results is found in `notebooks/Plott
 At the time of release, the main script was called `train_weak_to_strong.py`, but it was less usable than
 `sweep.py` and `train_simple.py`. It is preserved here and the old instructions are given at the end of the document.
 
+#### Mixed Supervision
+
+This codebase supports **mixed supervision**: training strong models with a combination of weak model predictions and ground truth labels. This enables studying how a small "supervision budget" of expensive ground truth labels can improve weak-to-strong generalization.
+
+Two mixing strategies are supported:
+
+**Sample-level mixing** (`--mix_strategy=sample`): Randomly select a fraction of examples to use ground truth labels, while the rest use weak labels.
+```bash
+python train_weak_to_strong.py \
+    --mix_ratio=0.25 --mix_strategy=sample \
+    --ds_name=sciq --n_docs=10000 \
+    --weak_model_size=gpt2 --strong_model_size=gpt2-xl
+```
+
+**Label-level mixing** (`--mix_strategy=label`): Interpolate between weak and ground truth labels for every example: `soft_label = (1-α)*weak + α*gt`
+```bash
+python train_weak_to_strong.py \
+    --mix_ratio=0.25 --mix_strategy=label \
+    --ds_name=sciq --n_docs=10000 \
+    --weak_model_size=gpt2 --strong_model_size=gpt2-xl
+```
+
+**Running mixing sweeps**: Use `sweep_mixing.py` to automatically run experiments across multiple mixing ratios:
+```bash
+python sweep_mixing.py \
+    --mix_ratios="0,0.25,0.5,0.75,1.0" \
+    --mix_strategy=sample \
+    --ds_name=sciq --n_docs=20000 \
+    --weak_model_size=gpt2-medium --strong_model_size=gpt2-xl
+```
+
+The `mix_ratio` parameter controls the fraction of ground truth labels (0.0 = pure weak supervision, 1.0 = pure ground truth). This allows studying the sample efficiency of weak-to-strong generalization and optimal supervision budget allocation.
+
 #### Expected results
 
 <img src="notebooks/amazon_polarity.png" width="350">
