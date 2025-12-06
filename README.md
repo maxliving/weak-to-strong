@@ -108,6 +108,50 @@ python train_weak_to_strong.py \
     --weak_model_size=gpt2 --strong_model_size=gpt2-medium
 ```
 
+**Weights & Biases Logging**: Track experiments with W&B by setting the `WANDB_PROJECT` environment variable:
+```bash
+# Enable W&B logging
+export WANDB_PROJECT=weak-to-strong-mixing
+
+# Run experiment with automatic logging
+python train_simple.py \
+    --model_size=gpt2-medium \
+    --ds_name=sciq \
+    --weak_labels_path=/tmp/results/default/{config}/weak_labels \
+    --mix_ratio=0.25 \
+    --mix_strategy=sample
+```
+
+**Logged metrics**:
+- Config parameters: `mix_ratio`, `mix_strategy`, `model_size`, `loss`, `lr`, etc.
+- Mixing statistics: `mixing/gt_examples`, `mixing/actual_gt_fraction`, `mixing/avg_label_entropy`
+- Training metrics: `train/loss`, `eval_accuracy` (from `train.py`)
+- Final results: `final/weak_acc`, `final/strong_acc`, `final/transfer_acc`, `final/pgr` (Performance Gap Recovered)
+
+The Performance Gap Recovered (PGR) metric shows what percentage of the gap between weak and strong models is recovered by the transfer model: `PGR = (transfer_acc - weak_acc) / (strong_acc - weak_acc)`
+
+**Complete example with W&B sweep**:
+```bash
+# Enable W&B logging
+export WANDB_PROJECT=weak-to-strong-mixing
+
+# Step 1: Generate weak labels
+python train_simple.py --model_size=gpt2 --ds_name=sciq --n_docs=10000
+
+# Step 2: Run mixing sweep (automatically logged to W&B)
+python sweep_mixing.py \
+    --mix_ratios="0,0.1,0.25,0.5,0.75,1.0" \
+    --mix_strategy=sample \
+    --model_size=gpt2-medium \
+    --ds_name=sciq \
+    --weak_labels_path=/tmp/results/default/{config}/weak_labels
+
+# View results in W&B dashboard to analyze:
+# - How PGR varies with mix_ratio
+# - Optimal supervision budget
+# - Sample vs label-level mixing strategies
+```
+
 #### Testing
 
 To run the unit tests for the mixed supervision functionality:

@@ -233,6 +233,8 @@ def main(
             lr_schedule=lr_schedule,
             log_prefix=log_prefix,
             optimizer_name=optimizer_name,
+            mix_ratio=mix_ratio,
+            mix_strategy=mix_strategy,
         )
         # Tokenize datasets
         tokenizer = get_tokenizer(model_config.name)
@@ -318,8 +320,37 @@ def main(
         # Log mixing statistics
         if mix_strategy == 'sample' and 'label_source' in mixed_ds.column_names:
             gt_count = sum(1 for x in mixed_ds if x['label_source'] == 'ground_truth')
+            actual_gt_fraction = gt_count / len(mixed_ds)
             print(f"Sample-level mixing: {gt_count}/{len(mixed_ds)} examples use ground truth "
-                  f"({gt_count/len(mixed_ds)*100:.1f}%)")
+                  f"({actual_gt_fraction*100:.1f}%)")
+
+            # Log to wandb
+            logger.logkvs({
+                'mixing/gt_examples': gt_count,
+                'mixing/weak_examples': len(mixed_ds) - gt_count,
+                'mixing/actual_gt_fraction': actual_gt_fraction,
+                'mixing/requested_gt_fraction': mix_ratio,
+            })
+        elif mix_strategy == 'label':
+            # For label-level mixing, compute average label entropy
+            import numpy as np
+            entropies = []
+            for example in mixed_ds:
+                probs = np.array(example['soft_label'])
+                # Avoid log(0) by adding small epsilon
+                entropy = -np.sum(probs * np.log(probs + 1e-10))
+                entropies.append(entropy)
+            avg_entropy = np.mean(entropies)
+            print(f"Label-level mixing: Average label entropy = {avg_entropy:.3f}")
+
+            # Log to wandb
+            logger.logkvs({
+                'mixing/avg_label_entropy': avg_entropy,
+                'mixing/min_label_entropy': np.min(entropies),
+                'mixing/max_label_entropy': np.max(entropies),
+            })
+
+        logger.dumpkvs()
 
         transfer_train_ds = mixed_ds
     else:
@@ -365,6 +396,29 @@ def main(
         transfer_acc = np.mean([x["acc"] for x in transfer_test_results])
         res_dict[f"transfer_acc_{tloss}"] = transfer_acc
         print(f"transfer acc ({tloss}):", transfer_acc)
+
+    # Log comparison metrics to wandb
+    performance_gap = strong_acc - weak_acc
+    logger.logkvs({
+        'final/weak_acc': weak_acc,
+        'final/strong_acc': strong_acc,
+        'final/performance_gap': performance_gap,
+    })
+
+    for tloss, transfer_test_results in all_transfer_test_results.items():
+        transfer_acc = np.mean([x["acc"] for x in transfer_test_results])
+        # Performance gain from transfer over weak baseline
+        transfer_gain = transfer_acc - weak_acc
+        # Percentage of gap closed: (transfer - weak) / (strong - weak)
+        pgr = transfer_gain / performance_gap if performance_gap > 0 else 0.0
+
+        logger.logkvs({
+            f'final/transfer_acc_{tloss}': transfer_acc,
+            f'final/transfer_gain_{tloss}': transfer_gain,
+            f'final/pgr_{tloss}': pgr,  # Performance Gap Recovered
+        })
+
+    logger.dumpkvs()
 
     with open(
         os.path.join(

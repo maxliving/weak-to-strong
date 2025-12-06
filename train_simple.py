@@ -309,8 +309,36 @@ def main(
             # Log mixing statistics
             if mix_strategy == 'sample' and 'label_source' in train1_ds.column_names:
                 gt_count = sum(1 for x in train1_ds if x['label_source'] == 'ground_truth')
+                actual_gt_fraction = gt_count / len(train1_ds)
                 print(f"Sample-level mixing: {gt_count}/{len(train1_ds)} examples use ground truth "
-                      f"({gt_count/len(train1_ds)*100:.1f}%)\n")
+                      f"({actual_gt_fraction*100:.1f}%)\n")
+
+                # Log to wandb
+                logger.logkvs({
+                    'mixing/gt_examples': gt_count,
+                    'mixing/weak_examples': len(train1_ds) - gt_count,
+                    'mixing/actual_gt_fraction': actual_gt_fraction,
+                    'mixing/requested_gt_fraction': mix_ratio,
+                })
+            elif mix_strategy == 'label':
+                # For label-level mixing, compute average label entropy
+                entropies = []
+                for example in train1_ds:
+                    probs = np.array(example['soft_label'])
+                    # Avoid log(0) by adding small epsilon
+                    entropy = -np.sum(probs * np.log(probs + 1e-10))
+                    entropies.append(entropy)
+                avg_entropy = np.mean(entropies)
+                print(f"Label-level mixing: Average label entropy = {avg_entropy:.3f}\n")
+
+                # Log to wandb
+                logger.logkvs({
+                    'mixing/avg_label_entropy': avg_entropy,
+                    'mixing/min_label_entropy': np.min(entropies),
+                    'mixing/max_label_entropy': np.max(entropies),
+                })
+
+            logger.dumpkvs()
 
             config["mix_ratio"] = mix_ratio
             config["mix_strategy"] = mix_strategy
@@ -324,6 +352,7 @@ def main(
         save_path=save_path,
         sweep_subfolder=sweep_subfolder,
         config_name=config_name,
+        **config,  # Pass all config params to wandb
     )
     # Tokenize datasets
     tokenizer = get_tokenizer(model_config.name)
