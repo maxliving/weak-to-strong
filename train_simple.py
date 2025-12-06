@@ -124,6 +124,14 @@ VALID_LOSSES: List[str] = list(loss_dict.keys())
 
 def get_config_foldername(config: dict) -> str:
     def shorten_key(key: str) -> str:
+        # Handle special cases to avoid collisions
+        if key == "mix_strategy":
+            return "mxs"
+        elif key == "mix_ratio":
+            return "mxr"
+        elif key == "model_size":
+            return "ms"
+        # Default: use first letter of each word
         return "".join(word[0] for word in key.split("_"))
 
     def shorten_value(value) -> str:
