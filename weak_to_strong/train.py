@@ -1,3 +1,4 @@
+import copy
 import itertools
 import os
 import pickle
@@ -45,6 +46,9 @@ def train_model(
     epochs: int = 1,
     lr_schedule: str = "cosine_anneal",
     optimizer_name: str = "adam",
+    # Best checkpoint tracking
+    min_delta: float = 0.0,
+    save_path: Optional[str] = None,
 ):
     print("LR", lr, "batch_size", batch_size, "minibatch_size", minibatch_size)
     assert batch_size % minibatch_size == 0, "batch size must be divisible by minibatch size"
@@ -81,7 +85,10 @@ def train_model(
     it = itertools.chain.from_iterable(itertools.repeat(ds, epochs))
     losses = []
     accuracies = []
-    eval_acc_dict = {}
+
+    # Best checkpoint tracking
+    best_eval_acc = -float('inf')
+    best_model_state = None
 
     # If the model is wrapped by DataParallel, it doesn't have a device. In this case,
     # we use GPU 0 as the output device. This sadly means that this device will store
@@ -99,8 +106,33 @@ def train_model(
             if train_with_dropout:
                 model.train()
             eval_accs = np.mean([r["acc"] for r in eval_results])
-            eval_acc_dict[step] = eval_accs
             logger.logkv("eval_accuracy", eval_accs)
+
+            # Track best model
+            improvement = eval_accs - best_eval_acc
+
+            if improvement > min_delta:
+                # Found new best model
+                print(f"[Best Checkpoint] New best validation accuracy: {eval_accs:.4f} (prev: {best_eval_acc:.4f})")
+                best_eval_acc = eval_accs
+
+                # Save best model checkpoint
+                if save_path:
+                    best_checkpoint_path = os.path.join(save_path, "best_checkpoint")
+                    os.makedirs(best_checkpoint_path, exist_ok=True)
+                    (model if hasattr(model, "save_pretrained") else model.module).save_pretrained(
+                        best_checkpoint_path, safe_serialization=False
+                    )
+                    print(f"[Best Checkpoint] Saved to {best_checkpoint_path}")
+
+                # Also save state dict in memory for restore_best_weights
+                best_model_state = copy.deepcopy(model.state_dict())
+
+                # Log to wandb
+                logger.logkvs({
+                    'best_checkpoint/best_eval_acc': best_eval_acc,
+                    'best_checkpoint/improvement': improvement,
+                })
         all_logits = []
         all_labels = []
         for i in range(batch_size // minibatch_size):
@@ -161,7 +193,11 @@ def train_model(
         final_eval_results = eval_model_acc(model, eval_ds, eval_batch_size, dataset_name="test set")
         logger.logkv("eval_accuracy", np.mean([r["acc"] for r in final_eval_results]))
         logger.dumpkvs()
-    return final_eval_results
+    return {
+        'test_results': final_eval_results,
+        'best_eval_acc': best_eval_acc if best_eval_acc > -float('inf') else None,
+        'best_model_state': best_model_state,
+    }
 
 
 def train_and_save_model(
@@ -184,6 +220,9 @@ def train_and_save_model(
     lr_schedule: str = "constant",
     optimizer_name: str = "adam",
     eval_every: Optional[int] = None,
+    # Best checkpoint tracking
+    min_delta: float = 0.0,
+    restore_best_weights: bool = True,
 ):
     if eval_batch_size is None:
         eval_batch_size = batch_size
@@ -250,7 +289,7 @@ def train_and_save_model(
         test_results = eval_model_acc(model, test_ds, eval_batch_size, dataset_name="test set")
     else:
         start = time.time()
-        test_results = train_model(
+        train_result = train_model(
             model,
             train_ds,
             batch_size,
@@ -265,8 +304,30 @@ def train_and_save_model(
             train_with_dropout=train_with_dropout,
             lr_schedule=lr_schedule,
             optimizer_name=optimizer_name,
+            # Best checkpoint params
+            min_delta=min_delta,
+            save_path=save_path,
         )
         print("Model training took", time.time() - start, "seconds")
+
+        # Extract results
+        test_results = train_result['test_results']
+        best_model_state = train_result.get('best_model_state')
+        best_eval_acc = train_result.get('best_eval_acc')
+
+        # Restore best weights if requested and available
+        if restore_best_weights and best_model_state is not None:
+            print(f"\n[Best Checkpoint] Restoring best model weights (validation accuracy: {best_eval_acc:.4f})")
+            model.load_state_dict(best_model_state)
+
+            # Re-evaluate on test set with best weights
+            print("=== Final Evaluation with Best Weights ===")
+            final_test_results = eval_model_acc(model, test_ds, eval_batch_size, dataset_name="test set (best checkpoint)")
+            logger.logkv("eval_accuracy", np.mean([r["acc"] for r in final_test_results]))
+            logger.logkv("best_checkpoint/final_test_acc", np.mean([r["acc"] for r in final_test_results]))
+            logger.dumpkvs()
+            test_results = final_test_results
+
         if save_path:
             # Note: If the model is wrapped by DataParallel, we need to unwrap it before saving
             (model if hasattr(model, "save_pretrained") else model.module).save_pretrained(

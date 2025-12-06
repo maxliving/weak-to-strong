@@ -14,6 +14,7 @@ from weak_to_strong.common import get_tokenizer
 from weak_to_strong.datasets import (VALID_DATASETS, load_dataset,
                                      tokenize_dataset)
 from weak_to_strong.loss import logconf_loss_fn, product_loss_fn, xent_loss
+import pytest
 from weak_to_strong.train import ModelConfig, train_and_save_model
 
 # NOTE learning rates are not particularly tuned, work somewhat reasonably at train batch size 32
@@ -181,6 +182,9 @@ def main(
     # Mixed supervision parameters
     mix_ratio: float = 0.0,  # Fraction of ground truth labels to mix in (0.0 to 1.0)
     mix_strategy: str = 'sample',  # 'sample' for sample-level or 'label' for label-level mixing
+    # Best checkpoint tracking
+    min_delta: float = 0.0,
+    restore_best_weights: bool = True,
 ):
     # this is per device!
     if minibatch_size_per_device is None:
@@ -225,6 +229,8 @@ def main(
         # "sweep_subfolder": sweep_subfolder,
         "mix_ratio": mix_ratio,
         "mix_strategy": mix_strategy,
+        # Best checkpoint params
+        "min_delta": min_delta,
     }
 
     if weak_model_size is not None:
@@ -404,6 +410,9 @@ def main(
         lr_schedule=lr_schedule,
         optimizer_name=optim,
         eval_every=eval_every,
+        # Best checkpoint params
+        min_delta=min_delta,
+        restore_best_weights=restore_best_weights,
     )
 
     if weak_ds is not None:

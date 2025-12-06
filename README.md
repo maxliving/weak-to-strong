@@ -141,6 +141,42 @@ python sweep_mixing.py \
 # - Sample vs label-level mixing strategies
 ```
 
+#### Best Checkpoint Tracking
+
+The training automatically tracks and saves the best model checkpoint based on validation accuracy:
+
+```bash
+python train_simple.py \
+    --model_size=gpt2-medium \
+    --ds_name=sciq \
+    --n_docs=10000 \
+    --eval_every=500 \
+    --min_delta=0.001
+```
+
+**Parameters**:
+- `--min_delta=X`: Minimum improvement threshold to count as progress (default: 0.0)
+- `--restore_best_weights=True/False`: Load best checkpoint after training (default: True)
+- `--eval_every=N`: How often to evaluate (required for checkpoint tracking)
+
+**How it works**:
+1. Model is evaluated every `eval_every` steps
+2. When validation accuracy improves by at least `min_delta`, the checkpoint is saved to `{save_path}/best_checkpoint/`
+3. After training completes (all epochs), the best weights are automatically restored if `restore_best_weights=True`
+4. Final test evaluation uses the best checkpoint
+
+**Example with mixed supervision**:
+```bash
+python train_simple.py \
+    --model_size=gpt2-large \
+    --ds_name=sciq \
+    --weak_labels_path=/tmp/results/default/{config}/weak_labels \
+    --mix_ratio=0.25 \
+    --eval_every=200
+```
+
+**Note:** Training always runs for the full number of epochs. This feature just ensures you get the best checkpoint, not early stopping.
+
 #### Testing
 
 To run the unit tests for the mixed supervision functionality:
