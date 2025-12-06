@@ -32,29 +32,17 @@ def sweep_mix_ratios(
         mix_ratios: Comma-separated list of mixing ratios to try (e.g., "0,0.25,0.5,1.0")
         mix_strategy: Mixing strategy - 'sample' or 'label'
         base_script: Script to run (default: train_simple.py)
-        **kwargs: Additional arguments to pass to the training script
-                  For train_simple.py: model_size, ds_name, weak_labels_path (required), etc.
-                  For train_weak_to_strong.py: weak_model_size, strong_model_size, etc.
+        **kwargs: Additional arguments to pass to train_simple.py
+                  Required: model_size, ds_name, weak_labels_path
+                  Optional: n_docs, batch_size, lr, etc.
 
-    Examples:
-        # Using train_simple.py (recommended)
+    Example:
         sweep_mix_ratios(
             mix_ratios="0,0.25,0.5,1.0",
             mix_strategy="sample",
             model_size="gpt2-medium",
             ds_name="sciq",
             weak_labels_path="/tmp/results/default/{config}/weak_labels"
-        )
-
-        # Using train_weak_to_strong.py (all-in-one)
-        sweep_mix_ratios(
-            mix_ratios="0,0.25,0.5,1.0",
-            mix_strategy="sample",
-            base_script="train_weak_to_strong.py",
-            ds_name="sciq",
-            n_docs=10000,
-            weak_model_size="gpt2",
-            strong_model_size="gpt2-medium"
         )
     """
     # Parse mix ratios

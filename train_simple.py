@@ -223,6 +223,8 @@ def main(
         "lr_schedule": lr_schedule,
         "eval_every": eval_every,
         # "sweep_subfolder": sweep_subfolder,
+        "mix_ratio": mix_ratio,
+        "mix_strategy": mix_strategy,
     }
 
     if weak_model_size is not None:
@@ -347,9 +349,6 @@ def main(
                     'mixing/min_label_entropy': np.min(entropies),
                     'mixing/max_label_entropy': np.max(entropies),
                 }
-
-            config["mix_ratio"] = mix_ratio
-            config["mix_strategy"] = mix_strategy
         else:
             mixing_stats = {}
 
