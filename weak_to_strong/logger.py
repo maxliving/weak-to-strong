@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 from datetime import datetime
 
 import wandb
@@ -8,6 +9,39 @@ import wandb
 def append_to_jsonl(path: str, data: dict):
     with open(path, "a") as f:
         f.write(json.dumps(data) + "\n")
+
+
+def get_git_hash():
+    """Get the current git commit hash."""
+    try:
+        return subprocess.check_output(
+            ['git', 'rev-parse', 'HEAD'],
+            stderr=subprocess.DEVNULL
+        ).decode('ascii').strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+
+
+def get_git_diff_status():
+    """Check if there are uncommitted changes."""
+    try:
+        # Check if there are any uncommitted changes
+        result = subprocess.run(
+            ['git', 'diff', '--quiet'],
+            stderr=subprocess.DEVNULL
+        )
+        has_changes = result.returncode != 0
+
+        # Check if there are any staged changes
+        result = subprocess.run(
+            ['git', 'diff', '--cached', '--quiet'],
+            stderr=subprocess.DEVNULL
+        )
+        has_staged = result.returncode != 0
+
+        return has_changes or has_staged
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
 
 
 class WandbLogger(object):
@@ -27,8 +61,18 @@ class WandbLogger(object):
         self.use_wandb = wandb_mode != "disabled"
 
         if self.use_wandb:
+            # Get git information
+            git_hash = get_git_hash()
+            git_dirty = get_git_diff_status()
+
+            # Add git info to config
+            config_with_git = dict(kwargs)
+            if git_hash is not None:
+                config_with_git['git_hash'] = git_hash
+                config_with_git['git_dirty'] = git_dirty if git_dirty is not None else False
+
             wandb.init(
-                config=kwargs,
+                config=config_with_git,
                 project=project,
                 mode=wandb_mode,
                 name=kwargs["name"].format(
