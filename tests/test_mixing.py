@@ -314,7 +314,7 @@ class TestApplyMixedSupervision:
         # Stats should be empty
         assert stats == {}
 
-    @patch('weak_to_strong.mixing.load_dataset')
+    @patch('weak_to_strong.datasets.load_dataset')
     def test_sample_level_mixing_stats(self, mock_load_dataset):
         """Test that sample-level mixing computes correct statistics."""
         weak_ds, gt_ds = create_dummy_datasets(n=100)
@@ -356,7 +356,7 @@ class TestApplyMixedSupervision:
             assert stats['mixing/actual_gt_fraction'] == 0.25
             assert stats['mixing/requested_gt_fraction'] == 0.25
 
-    @patch('weak_to_strong.mixing.load_dataset')
+    @patch('weak_to_strong.datasets.load_dataset')
     def test_label_level_mixing_stats(self, mock_load_dataset):
         """Test that label-level mixing computes entropy statistics."""
         weak_ds, gt_ds = create_dummy_datasets(n=100)
@@ -398,7 +398,7 @@ class TestApplyMixedSupervision:
             # Entropy should be positive for non-deterministic labels
             assert stats['mixing/avg_label_entropy'] > 0
 
-    @patch('weak_to_strong.mixing.load_dataset')
+    @patch('weak_to_strong.datasets.load_dataset')
     @patch('weak_to_strong.mixing.create_mixed_supervision_dataset')
     def test_loads_ground_truth_correctly(self, mock_create, mock_load_dataset):
         """Test that ground truth dataset is loaded with correct parameters."""
@@ -439,7 +439,7 @@ class TestApplyMixedSupervision:
             )
         )
 
-    @patch('weak_to_strong.mixing.load_dataset')
+    @patch('weak_to_strong.datasets.load_dataset')
     @patch('weak_to_strong.mixing.create_mixed_supervision_dataset')
     def test_dataset_split_consistency(self, mock_create, mock_load_dataset):
         """Test that dataset is split the same way as weak labels were generated."""
@@ -483,7 +483,7 @@ class TestApplyMixedSupervision:
         weak_ds, _ = create_dummy_datasets(n=100)
 
         # Create a properly formatted mock for the original dataset
-        with patch('weak_to_strong.mixing.load_dataset') as mock_load_dataset:
+        with patch('weak_to_strong.datasets.load_dataset') as mock_load_dataset:
             _, gt_ds = create_dummy_datasets(n=200, seed=123)
 
             # Mock the entire flow

@@ -10,6 +10,8 @@ from datasets import Dataset
 from typing import Optional
 import random
 
+from weak_to_strong.datasets import load_dataset
+
 
 def mix_datasets_sample_level(
     weak_labeled_ds: Dataset,
@@ -330,9 +332,6 @@ def apply_mixed_supervision(
     # Need to reload the original ground truth dataset and split it the same way
     # to get train2_ds with ground truth labels
     print("Loading original dataset for ground truth labels...")
-
-    # Import here to avoid circular dependency
-    from weak_to_strong.datasets import load_dataset
 
     original_dataset = load_dataset(
         ds_name,
