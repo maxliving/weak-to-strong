@@ -5,6 +5,7 @@ Unit tests for mixed supervision functionality.
 import pytest
 import numpy as np
 from datasets import Dataset
+from unittest.mock import Mock, patch, MagicMock
 
 from weak_to_strong.mixing import (
     mix_datasets_sample_level,
@@ -12,6 +13,7 @@ from weak_to_strong.mixing import (
     create_mixed_supervision_dataset,
     validate_mixing
 )
+from train_simple import apply_mixed_supervision
 
 
 def create_dummy_datasets(n=100, seed=42):
@@ -88,6 +90,39 @@ class TestSampleLevelMixing:
         mixed_ds = mix_datasets_sample_level(weak_ds, gt_ds, mix_ratio=0.5, seed=42)
 
         assert len(mixed_ds) == 100, "Mixed dataset should have same length as inputs"
+
+    def test_mixed_labels_match_source(self):
+        """
+        Test that when label_source is 'ground_truth', the label matches the GT dataset,
+        and when it is 'weak', it matches the weak dataset.
+        """
+        weak_ds, gt_ds = create_dummy_datasets(n=100)
+        
+        # Create mixed dataset
+        mixed_ds = mix_datasets_sample_level(weak_ds, gt_ds, mix_ratio=0.5, seed=42)
+        
+        for i, example in enumerate(mixed_ds):
+            source = example['label_source']
+            
+            if source == 'ground_truth':
+                # Should match GT label exactly
+                np.testing.assert_array_almost_equal(
+                    example['soft_label'], 
+                    gt_ds[i]['soft_label'],
+                    err_msg=f"Example {i} marked as Ground Truth but label mismatch"
+                )
+                # Should NOT match weak label (unless by random chance they are identical)
+                # In our dummy dataset, probabilities are random floats so exact match is unlikely
+                if not np.allclose(weak_ds[i]['soft_label'], gt_ds[i]['soft_label']):
+                     assert not np.allclose(example['soft_label'], weak_ds[i]['soft_label'])
+                         
+            elif source == 'weak':
+                # Should match weak label exactly
+                np.testing.assert_array_almost_equal(
+                    example['soft_label'], 
+                    weak_ds[i]['soft_label'],
+                    err_msg=f"Example {i} marked as Weak but label mismatch"
+                )
 
     def test_label_source_field_added(self):
         """Test that label_source field is added to mixed dataset."""
@@ -254,6 +289,226 @@ class TestValidateMixing:
 
         assert 'avg_label_entropy' in results
         assert results['avg_label_entropy'] is not None
+
+
+class TestApplyMixedSupervision:
+    """Tests for the apply_mixed_supervision function from train_simple.py."""
+
+    def test_mix_ratio_zero_returns_unchanged(self):
+        """Test that mix_ratio=0 returns weak labels unchanged with empty stats."""
+        weak_ds, _ = create_dummy_datasets(n=100)
+        weak_model_config = {'seed': 42, 'n_docs': 200}
+
+        result_ds, stats = apply_mixed_supervision(
+            weak_labeled_ds=weak_ds,
+            ds_name='sciq',
+            weak_model_config=weak_model_config,
+            n_test_docs=100,
+            mix_ratio=0.0,
+            mix_strategy='sample',
+            seed=42
+        )
+
+        # Should return the same dataset
+        assert len(result_ds) == len(weak_ds)
+        # Stats should be empty
+        assert stats == {}
+
+    @patch('train_simple.load_dataset')
+    def test_sample_level_mixing_stats(self, mock_load_dataset):
+        """Test that sample-level mixing computes correct statistics."""
+        weak_ds, gt_ds = create_dummy_datasets(n=100)
+
+        # Mock the dataset loading to return our test data
+        mock_original_dataset = {'train': Dataset.from_dict({
+            'txt': [f'example_{i}' for i in range(200)],
+            'soft_label': [[0.5, 0.5] for _ in range(200)],
+            'hard_label': [0] * 200
+        })}
+        mock_load_dataset.return_value = mock_original_dataset
+
+        weak_model_config = {'seed': 42, 'n_docs': 200}
+
+        with patch('train_simple.create_mixed_supervision_dataset') as mock_create:
+            # Create a mock mixed dataset with label_source field
+            mock_mixed = weak_ds.add_column('label_source',
+                ['ground_truth'] * 25 + ['weak'] * 75)
+            mock_create.return_value = mock_mixed
+
+            result_ds, stats = apply_mixed_supervision(
+                weak_labeled_ds=weak_ds,
+                ds_name='sciq',
+                weak_model_config=weak_model_config,
+                n_test_docs=100,
+                mix_ratio=0.25,
+                mix_strategy='sample',
+                seed=42
+            )
+
+            # Check that stats were computed
+            assert 'mixing/gt_examples' in stats
+            assert 'mixing/weak_examples' in stats
+            assert 'mixing/actual_gt_fraction' in stats
+            assert 'mixing/requested_gt_fraction' in stats
+
+            assert stats['mixing/gt_examples'] == 25
+            assert stats['mixing/weak_examples'] == 75
+            assert stats['mixing/actual_gt_fraction'] == 0.25
+            assert stats['mixing/requested_gt_fraction'] == 0.25
+
+    @patch('train_simple.load_dataset')
+    def test_label_level_mixing_stats(self, mock_load_dataset):
+        """Test that label-level mixing computes entropy statistics."""
+        weak_ds, gt_ds = create_dummy_datasets(n=100)
+
+        # Mock the dataset loading
+        mock_original_dataset = {'train': Dataset.from_dict({
+            'txt': [f'example_{i}' for i in range(200)],
+            'soft_label': [[0.5, 0.5] for _ in range(200)],
+            'hard_label': [0] * 200
+        })}
+        mock_load_dataset.return_value = mock_original_dataset
+
+        weak_model_config = {'seed': 42, 'n_docs': 200}
+
+        with patch('train_simple.create_mixed_supervision_dataset') as mock_create:
+            # Create a mock mixed dataset with interpolated labels
+            mock_mixed = Dataset.from_dict({
+                'txt': [f'example_{i}' for i in range(100)],
+                'soft_label': [[0.6, 0.4] for _ in range(100)],  # Mixed probabilities
+                'hard_label': [0] * 100
+            })
+            mock_create.return_value = mock_mixed
+
+            result_ds, stats = apply_mixed_supervision(
+                weak_labeled_ds=weak_ds,
+                ds_name='sciq',
+                weak_model_config=weak_model_config,
+                n_test_docs=100,
+                mix_ratio=0.5,
+                mix_strategy='label',
+                seed=42
+            )
+
+            # Check that entropy stats were computed
+            assert 'mixing/avg_label_entropy' in stats
+            assert 'mixing/min_label_entropy' in stats
+            assert 'mixing/max_label_entropy' in stats
+
+            # Entropy should be positive for non-deterministic labels
+            assert stats['mixing/avg_label_entropy'] > 0
+
+    @patch('train_simple.load_dataset')
+    @patch('train_simple.create_mixed_supervision_dataset')
+    def test_loads_ground_truth_correctly(self, mock_create, mock_load_dataset):
+        """Test that ground truth dataset is loaded with correct parameters."""
+        weak_ds, gt_ds = create_dummy_datasets(n=100)
+
+        # Mock the dataset loading
+        mock_train_dataset = Dataset.from_dict({
+            'txt': [f'example_{i}' for i in range(200)],
+            'soft_label': [[0.5, 0.5] for _ in range(200)],
+            'hard_label': [0] * 200
+        })
+        mock_original_dataset = {'train': mock_train_dataset}
+        mock_load_dataset.return_value = mock_original_dataset
+        mock_create.return_value = weak_ds
+
+        weak_model_config = {
+            'seed': 123,
+            'n_docs': 1000
+        }
+
+        result_ds, stats = apply_mixed_supervision(
+            weak_labeled_ds=weak_ds,
+            ds_name='sciq',
+            weak_model_config=weak_model_config,
+            n_test_docs=500,
+            mix_ratio=0.3,
+            mix_strategy='sample',
+            seed=42
+        )
+
+        # Verify load_dataset was called with correct parameters
+        mock_load_dataset.assert_called_once_with(
+            'sciq',
+            seed=123,  # Should use weak model's seed
+            split_sizes=dict(
+                train=1000,  # Should use weak model's n_docs
+                test=500
+            )
+        )
+
+    @patch('train_simple.load_dataset')
+    @patch('train_simple.create_mixed_supervision_dataset')
+    def test_dataset_split_consistency(self, mock_create, mock_load_dataset):
+        """Test that dataset is split the same way as weak labels were generated."""
+        weak_ds, _ = create_dummy_datasets(n=100)
+
+        # Mock the dataset loading with train_test_split
+        mock_train_dataset = MagicMock()
+        mock_split_result = {
+            'train': Dataset.from_dict({'txt': ['train_ex']}),
+            'test': Dataset.from_dict({'txt': ['test_ex']})
+        }
+        mock_train_dataset.train_test_split.return_value = mock_split_result
+        mock_original_dataset = {'train': mock_train_dataset}
+        mock_load_dataset.return_value = mock_original_dataset
+        mock_create.return_value = weak_ds
+
+        weak_model_config = {'seed': 999, 'n_docs': 200}
+
+        result_ds, stats = apply_mixed_supervision(
+            weak_labeled_ds=weak_ds,
+            ds_name='sciq',
+            weak_model_config=weak_model_config,
+            n_test_docs=100,
+            mix_ratio=0.5,
+            mix_strategy='sample',
+            seed=42
+        )
+
+        # Verify train_test_split was called with weak model's seed
+        mock_train_dataset.train_test_split.assert_called_once_with(
+            test_size=0.5,
+            seed=999  # Should use weak model's seed for consistency
+        )
+
+        # Verify create_mixed_supervision_dataset received the 'test' split (train2_ds_gt)
+        args, kwargs = mock_create.call_args
+        assert kwargs['ground_truth_ds'] == mock_split_result['test']
+
+    def test_integration_with_real_mixing_functions(self):
+        """Integration test using real mixing functions (not mocked)."""
+        weak_ds, _ = create_dummy_datasets(n=100)
+
+        # Create a properly formatted mock for the original dataset
+        with patch('train_simple.load_dataset') as mock_load_dataset:
+            _, gt_ds = create_dummy_datasets(n=200, seed=123)
+
+            # Mock the entire flow
+            mock_train_dataset = gt_ds
+            mock_original_dataset = {'train': mock_train_dataset}
+            mock_load_dataset.return_value = mock_original_dataset
+
+            weak_model_config = {'seed': 123, 'n_docs': 200}
+
+            # This should use real create_mixed_supervision_dataset
+            result_ds, stats = apply_mixed_supervision(
+                weak_labeled_ds=weak_ds,
+                ds_name='sciq',
+                weak_model_config=weak_model_config,
+                n_test_docs=100,
+                mix_ratio=0.25,
+                mix_strategy='sample',
+                seed=42
+            )
+
+            # Verify result
+            assert len(result_ds) == len(weak_ds)
+            assert 'label_source' in result_ds.column_names
+            assert 'mixing/gt_examples' in stats
+            assert 'mixing/actual_gt_fraction' in stats
 
 
 if __name__ == "__main__":
