@@ -168,10 +168,10 @@ def main(
     results_folder: str = "/tmp/results",
     linear_probe: bool = False,
     lr_schedule: str = "cosine_anneal",
-    # Note: you can pass either weak_model_size or weak_labels_path. If you pass
-    # weak_model_size, we will guess the path to the weak labels based on the weak
-    # model. If you pass weak_labels_path, we will use that path instead.
-    # If you pass neither, we will train on ground truth.
+    # Note: mix_ratio controls training mode:
+    #   - mix_ratio=1.0 (default): Pure ground truth split mode
+    #   - mix_ratio<1.0: Mixed supervision mode (requires weak_labels_path or weak_model_size)
+    # You can pass either weak_model_size or weak_labels_path to specify weak labels.
     weak_model_size: Optional[str] = None,
     weak_labels_path: Optional[str] = None,
     sweep_subfolder: str = "default",
@@ -180,7 +180,7 @@ def main(
     eval_every: int = 1000000,
     sync_command: Optional[str] = None,
     # Mixed supervision parameters
-    mix_ratio: float = 0.0,  # Fraction of ground truth labels to mix in (0.0 to 1.0)
+    mix_ratio: float = 1.0,  # Ground truth fraction: 1.0=pure GT (default), <1.0=mixed supervision
     mix_strategy: str = 'sample',  # 'sample' for sample-level or 'label' for label-level mixing
     # Best checkpoint tracking
     min_delta: float = 0.0,
@@ -246,6 +246,23 @@ def main(
             results_folder + "/" + sweep_subfolder + "/" + weak_model_config_name + "/weak_labels"
         )
 
+    # Validate mix_ratio and weak_labels_path compatibility
+    if mix_ratio < 0.0 or mix_ratio > 1.0:
+        raise ValueError(f"mix_ratio must be between 0.0 and 1.0, got {mix_ratio}")
+
+    if mix_ratio == 1.0 and weak_labels_path is not None:
+        raise ValueError(
+            f"mix_ratio=1.0 (pure ground truth) is incompatible with weak_labels_path. "
+            f"Either use mix_ratio<1.0 for mixed supervision, or omit weak_labels_path for ground truth mode."
+        )
+
+    if mix_ratio < 1.0 and weak_labels_path is None:
+        raise ValueError(
+            f"mix_ratio={mix_ratio} requires weak_labels_path to be provided. "
+            f"To train on ground truth only, use mix_ratio=1.0 (default). "
+            f"You can also use --weak_model_size to auto-generate the path."
+        )
+
     eval_batch_size = model_config.eval_batch_size
     random.seed(seed)
 
@@ -256,33 +273,40 @@ def main(
     train_dataset, test_ds = dataset["train"], dataset["test"]
 
     # ============================================================================
-    # TWO EXECUTION PATHS:
-    # 1. Ground truth split (weak_labels_path=None):
+    # EXECUTION PATHS BASED ON mix_ratio:
+    # 1. Pure ground truth (mix_ratio=1.0):
     #    - Split train data in half: train1 for training, train2 for weak label generation
     #    - No mixing applied
+    #    - weak_labels_path must be None (otherwise error)
     #
-    # 2. Weak supervision (weak_labels_path provided):
+    # 2. Mixed supervision (mix_ratio<1.0):
     #    - Load pre-computed weak labels from disk
-    #    - Optionally apply mixed supervision (combining weak + ground truth)
+    #    - Apply mixed supervision (combining weak + ground truth)
+    #    - weak_labels_path must be provided (otherwise error)
     # ============================================================================
 
-    if weak_labels_path is None:
-        # PATH 1: Ground truth split
+    if mix_ratio == 1.0:
+        # PATH 1: Pure Ground Truth Mode
         # Split the training data in half for standard weak-to-strong setup
+        # Note: weak_labels_path is guaranteed to be None by validation above
+
         split_data = train_dataset.train_test_split(test_size=0.5, seed=seed)
         train1_ds, train2_ds = split_data["train"], split_data["test"]
         print("\n" + "="*60)
-        print("DATA SPLIT")
+        print("DATA SPLIT (GROUND TRUTH MODE)")
         print("="*60)
         print(f"train1 (for training): {len(train1_ds)} examples")
         print(f"train2 (held-out for weak labels): {len(train2_ds)} examples")
         print(f"test (for evaluation): {len(test_ds)} examples")
         print("="*60 + "\n")
         config_name = get_config_foldername(config)
-        mixing_stats = {}  # No mixing in this case
+        mixing_stats = {}  # No mixing in pure ground truth mode
+
     else:
-        # PATH 2: Weak supervision with optional mixing
-        # Load pre-computed weak labels from a previously trained weak model
+        # PATH 2: Mixed Supervision Mode (mix_ratio < 1.0)
+        # Load pre-computed weak labels and mix with ground truth
+        # Note: weak_labels_path is guaranteed to be set by validation above
+
         if not weak_labels_path.endswith("weak_labels"):
             weak_labels_path = weak_labels_path + "/weak_labels"
         if sync_command is not None:
@@ -303,8 +327,7 @@ def main(
         weak_model_config = json.load(open(weak_labels_path.replace("weak_labels", "config.json")))
         config["weak_model_size"] = weak_model_config["model_size"]
 
-        # Optionally apply mixed supervision (combining weak labels + ground truth)
-        # If mix_ratio=0.0, this returns the weak labels unchanged
+        # Apply mixed supervision (combining weak labels + ground truth)
         train1_ds, mixing_stats = apply_mixed_supervision(
             weak_labeled_ds=train1_ds,
             ds_name=ds_name,

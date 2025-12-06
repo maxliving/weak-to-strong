@@ -1,5 +1,13 @@
 **STATUS**: This codebase is not well tested and does not use the exact same settings we used in the paper, but in our experience gives qualitatively similar results when using large model size gaps and multiple seeds.  Expected results can be found for two datasets below.
 
+## Recent Updates
+
+- ✅ **Best Checkpoint Tracking**: Automatically saves and restores the best model based on validation accuracy (not early stopping - runs full epochs)
+- ✅ **Refactored Mixing Logic**: Moved `apply_mixed_supervision()` to `mixing.py` module for proper testability
+- ✅ **Comprehensive Unit Tests**: Added 6 new tests for `apply_mixed_supervision()` covering edge cases, both mixing strategies, and integration
+- ✅ **W&B Auto-Logging**: Defaults to `weak-to-strong-mixing` project - just run `wandb login` once and experiments auto-log (no env vars needed!)
+- ✅ **Code Documentation**: Clear separation of two execution paths (ground truth split vs. weak supervision)
+
 # Weak-to-strong generalization
 
 ![Our setup and how it relates to superhuman AI alignment](./weak-to-strong-setup.png)
@@ -56,18 +64,37 @@ An example of Jupyter notebook for plotting results is found in `notebooks/Plott
 
 #### Mixed Supervision
 
-This codebase supports **mixed supervision**: training strong models with a combination of weak model predictions and ground truth labels. This enables studying how a small "supervision budget" of expensive ground truth labels can improve weak-to-strong generalization.
+This codebase supports **mixed supervision**: training strong models with a combination of weak model predictions and ground truth labels. The `--mix_ratio` parameter controls the training mode.
 
-**Workflow**: Mixed supervision requires two steps:
+**Three training modes:**
 
-1. **Generate weak labels** (train a weak model and generate predictions):
+**1. Pure Ground Truth** (`--mix_ratio=1.0`, default)
 ```bash
+# Standard weak-to-strong setup
 python train_simple.py --model_size=gpt2 --ds_name=sciq --n_docs=10000
-# This creates weak labels at: /tmp/results/default/{config}/weak_labels
+
+# Splits data 50/50, trains on first half (ground truth), generates weak labels on second half
 ```
 
-2. **Train with mixed supervision** (combine weak labels with ground truth):
+**2. Pure Weak Supervision** (`--mix_ratio=0.0`)
 ```bash
+# First generate weak labels
+python train_simple.py --model_size=gpt2 --ds_name=sciq --n_docs=10000
+
+# Then train on 100% weak labels
+python train_simple.py \
+    --model_size=gpt2-medium \
+    --ds_name=sciq \
+    --weak_labels_path=/tmp/results/default/{config}/weak_labels \
+    --mix_ratio=0.0
+```
+
+**3. Mixed Supervision** (`0.0 < mix_ratio < 1.0`)
+```bash
+# First generate weak labels (same as above)
+python train_simple.py --model_size=gpt2 --ds_name=sciq --n_docs=10000
+
+# Then train with 75% weak + 25% ground truth
 python train_simple.py \
     --model_size=gpt2-medium \
     --ds_name=sciq \
@@ -97,18 +124,25 @@ python sweep_mixing.py \
 
 The `mix_ratio` parameter controls the fraction of ground truth labels (0.0 = pure weak supervision, 1.0 = pure ground truth).
 
-**Weights & Biases Logging**: Track experiments with W&B by setting the `WANDB_PROJECT` environment variable:
-```bash
-# Enable W&B logging
-export WANDB_PROJECT=weak-to-strong-mixing
+**Weights & Biases Logging**: Experiments are automatically logged to W&B (project: `weak-to-strong-mixing`):
 
-# Run experiment with automatic logging
+```bash
+# First time setup: authenticate with W&B
+wandb login
+
+# Run experiment - automatically logs to W&B
 python train_simple.py \
     --model_size=gpt2-medium \
     --ds_name=sciq \
     --weak_labels_path=/tmp/results/default/{config}/weak_labels \
     --mix_ratio=0.25 \
     --mix_strategy=sample
+
+# Optional: Use a different project name
+export WANDB_PROJECT=my-custom-project
+
+# Optional: Disable W&B logging
+export WANDB_MODE=disabled
 ```
 
 **Logged metrics**:
@@ -121,8 +155,8 @@ The Performance Gap Recovered (PGR) metric shows what percentage of the gap betw
 
 **Complete example with W&B sweep**:
 ```bash
-# Enable W&B logging
-export WANDB_PROJECT=weak-to-strong-mixing
+# One-time setup: authenticate with W&B
+wandb login
 
 # Step 1: Generate weak labels
 python train_simple.py --model_size=gpt2 --ds_name=sciq --n_docs=10000
@@ -135,7 +169,8 @@ python sweep_mixing.py \
     --ds_name=sciq \
     --weak_labels_path=/tmp/results/default/{config}/weak_labels
 
-# View results in W&B dashboard to analyze:
+# View results at: https://wandb.ai/your_username/weak-to-strong-mixing
+# Analyze:
 # - How PGR varies with mix_ratio
 # - Optimal supervision budget
 # - Sample vs label-level mixing strategies
@@ -177,6 +212,39 @@ python train_simple.py \
 
 **Note:** Training always runs for the full number of epochs. This feature just ensures you get the best checkpoint, not early stopping.
 
+#### Code Architecture
+
+The codebase is organized into modular components:
+
+**Core Modules** (`weak_to_strong/`):
+- `train.py` - Core training loop with best checkpoint tracking
+- `mixing.py` - Mixed supervision functions for combining weak and ground truth labels
+  - `mix_datasets_sample_level()` - Sample-level mixing strategy
+  - `mix_datasets_label_level()` - Label-level mixing strategy
+  - `create_mixed_supervision_dataset()` - Main entry point for mixing
+  - `apply_mixed_supervision()` - High-level function that loads ground truth and applies mixing
+  - `validate_mixing()` - Validates mixing was performed correctly
+- `datasets.py` - Dataset loading and preprocessing
+- `loss.py` - Loss functions (cross-entropy, logconf, product)
+- `eval.py` - Model evaluation utilities
+- `model.py` - Model architecture (TransformerWithHead)
+
+**Scripts**:
+- `train_simple.py` - Main CLI for training (supports two execution paths)
+  - **Path 1**: Ground truth split - trains from scratch, splits data for weak label generation
+  - **Path 2**: Weak supervision - loads pre-computed weak labels with optional mixing
+- `sweep.py` - Sweeps across model sizes for weak-to-strong experiments
+- `sweep_mixing.py` - Sweeps across mixing ratios for sample efficiency studies
+
+**Tests** (`tests/`):
+- `test_mixing.py` - Unit tests for all mixing functions including `apply_mixed_supervision`
+- `test_dataset_consistency.py` - Dataset reconstruction validation
+
+**Key Design Decisions**:
+- Mixed supervision logic is in `mixing.py` module (not in train_simple.py script) for proper testing
+- Best checkpoint tracking runs for full epochs (not early stopping) to maintain reproducibility
+- Two mixing strategies enable different research questions about supervision budgets
+
 #### Testing
 
 To run the unit tests for the mixed supervision functionality:
@@ -191,6 +259,13 @@ pytest tests/test_mixing.py -v
 # Or run all tests
 pytest tests/ -v
 ```
+
+**Test Coverage**:
+- Sample-level and label-level mixing strategies
+- Dataset alignment validation
+- Statistics computation (GT fraction, label entropy)
+- `apply_mixed_supervision()` function (dataset loading, splitting, mixing)
+- Integration tests with real mixing functions
 
 #### Expected results
 
