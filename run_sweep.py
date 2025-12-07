@@ -360,9 +360,9 @@ def main():
     # Training parameters
     N_DOCS = 20000
     N_TEST_DOCS = 10000
-    EVAL_EVERY = 200
+    EVAL_EVERY = 100
     EPOCHS = 4  # Change this to run more/fewer epochs
-    RESULTS_FOLDER = "/tmp/results"
+    RESULTS_FOLDER = "./results"
 
     # W&B configuration (for automatic skip of completed runs)
     WANDB_ENTITY = "maxliving-personal"  # Your W&B username
