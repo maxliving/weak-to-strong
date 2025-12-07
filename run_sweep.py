@@ -13,6 +13,13 @@ from dataclasses import dataclass
 from typing import List, Optional, Set, Tuple
 from datetime import datetime
 
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
+    print("Warning: wandb not available, cannot check for existing runs")
+
 
 @dataclass
 class ExperimentConfig:
@@ -51,15 +58,91 @@ class SweepRunner:
                  n_test_docs: int = 10000,
                  eval_every: int = 200,
                  results_folder: str = "/tmp/results",
-                 dry_run: bool = False):
+                 dry_run: bool = False,
+                 wandb_entity: Optional[str] = None,
+                 wandb_project: str = "weak-to-strong-mixing"):
         self.n_docs = n_docs
         self.n_test_docs = n_test_docs
         self.eval_every = eval_every
         self.results_folder = results_folder
         self.dry_run = dry_run
+        self.wandb_entity = wandb_entity
+        self.wandb_project = wandb_project
 
         self.completed_runs: Set[ExperimentConfig] = set()
         self.failed_runs: List[ExperimentConfig] = []
+
+        # Fetch existing runs from W&B if available
+        if wandb_entity and WANDB_AVAILABLE:
+            self._load_existing_runs_from_wandb()
+
+    def _load_existing_runs_from_wandb(self):
+        """Load existing runs from W&B to avoid re-running."""
+        try:
+            print(f"\nFetching existing runs from W&B ({self.wandb_entity}/{self.wandb_project})...")
+            api = wandb.Api()
+            runs = api.runs(f"{self.wandb_entity}/{self.wandb_project}")
+
+            skipped_count = 0
+            for run in runs:
+                # Only consider finished runs
+                if run.state != "finished":
+                    continue
+
+                config = run.config
+                summary = run.summary._json_dict
+
+                # Extract experiment details from config
+                dataset = config.get('ds_name')
+                strong_model = config.get('model_size')
+                mix_ratio = config.get('mix_ratio')
+                n_docs = config.get('n_docs')
+                epochs = config.get('epochs', 2)  # Default to 2 if not specified
+
+                # Get weak model (could be in weak_model_size or weak_model.model_size)
+                weak_model = config.get('weak_model_size')
+                if weak_model is None and 'weak_model' in config:
+                    weak_model = config['weak_model'].get('model_size')
+
+                # Skip if missing essential info
+                if dataset is None or strong_model is None or mix_ratio is None:
+                    continue
+
+                # Verify run completed sufficient training steps
+                # Calculate expected steps: (n_docs / batch_size) * epochs
+                batch_size = config.get('batch_size', 32)
+                expected_steps = (n_docs / batch_size) * epochs if n_docs else None
+
+                # Check if run has final accuracy metric (indicates completion)
+                has_final_metric = ('eval_accuracy' in summary or
+                                   'final/strong_acc' in summary or
+                                   'best_checkpoint/final_test_acc' in summary)
+
+                # Check step count if available
+                step_count = summary.get('step', summary.get('_step', 0))
+                sufficient_steps = True
+                if expected_steps and step_count > 0:
+                    # Allow 10% tolerance for step count differences
+                    sufficient_steps = step_count >= (expected_steps * 0.9)
+
+                # Only mark as completed if has final metrics AND sufficient steps
+                if has_final_metric and sufficient_steps:
+                    exp_config = ExperimentConfig(
+                        dataset=dataset,
+                        strong_model=strong_model,
+                        weak_model=weak_model if mix_ratio < 1.0 else None,
+                        mix_ratio=mix_ratio
+                    )
+                    self.completed_runs.add(exp_config)
+                else:
+                    skipped_count += 1
+
+            print(f"✓ Found {len(self.completed_runs)} completed runs in W&B")
+            if skipped_count > 0:
+                print(f"  (Skipped {skipped_count} incomplete/crashed runs)")
+        except Exception as e:
+            print(f"⚠ Warning: Could not fetch W&B runs: {e}")
+            print("  Continuing without W&B check...")
 
     def run_experiment(self, config: ExperimentConfig) -> bool:
         """Run a single experiment. Returns True if successful."""
@@ -257,6 +340,10 @@ def main():
     EVAL_EVERY = 200
     RESULTS_FOLDER = "/tmp/results"
 
+    # W&B configuration (for automatic skip of completed runs)
+    WANDB_ENTITY = "maxliving-personal"  # Your W&B username
+    WANDB_PROJECT = "weak-to-strong-mixing"
+
     # Dry run mode (set to True to preview without executing)
     DRY_RUN = False
 
@@ -315,7 +402,9 @@ def main():
         n_test_docs=N_TEST_DOCS,
         eval_every=EVAL_EVERY,
         results_folder=RESULTS_FOLDER,
-        dry_run=DRY_RUN
+        dry_run=DRY_RUN,
+        wandb_entity=WANDB_ENTITY,
+        wandb_project=WANDB_PROJECT
     )
 
     print(f"\nStarting sweep at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
