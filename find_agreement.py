@@ -79,26 +79,20 @@ def generate_base_model_predictions(
         weak_labels_ds = tokenize_dataset(weak_labels_ds, tokenizer, max_ctx)
 
     # Determine number of classes from the weak_labels dataset
-    n_labels = len(weak_labels_ds[0]['soft_label']) if 'soft_label' in weak_labels_ds[0] else 2
-
-    # Create model config
-    model_config = ModelConfig(
-        name=model_size,
-        default_lr=1e-5,
-        eval_batch_size=batch_size,
-    )
+    num_labels = len(weak_labels_ds[0]['soft_label']) if 'soft_label' in weak_labels_ds[0] else 2
 
     # Load base model (no fine-tuning)
     print(f"Initializing {model_size} model...")
-    model = TransformerWithHead(
-        model_config.name,
-        n_labels=n_labels,
-        **model_config.custom_kwargs if model_config.custom_kwargs else {}
-    )
-
-    # Move to GPU if available
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = model.to(device)
+    if torch.cuda.is_available():
+        model = TransformerWithHead.from_pretrained(
+            model_size,
+            num_labels=num_labels,
+        ).to("cuda")
+    else:
+        model = TransformerWithHead.from_pretrained(
+            model_size,
+            num_labels=num_labels,
+        )
 
     print(f"Running inference on {len(weak_labels_ds)} examples...")
 
@@ -111,7 +105,7 @@ def generate_base_model_predictions(
         records.append({
             'idx': i,
             'txt': result['txt'],
-            f'{model_name}_soft_label': result['soft_label'][1] if n_labels == 2 else max(result['soft_label']),
+            f'{model_name}_soft_label': result['soft_label'][1] if num_labels == 2 else max(result['soft_label']),
             f'{model_name}_hard_label': result['hard_label'],
         })
 
