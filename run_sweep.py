@@ -259,6 +259,13 @@ class SweepRunner:
             total_gpus = 8
             gpus_per_worker = total_gpus // self.parallel_workers
 
+            print(f"\nGPU Assignment:")
+            for worker_id in range(self.parallel_workers):
+                start_gpu = worker_id * gpus_per_worker
+                end_gpu = start_gpu + gpus_per_worker
+                gpu_list = list(range(start_gpu, end_gpu))
+                print(f"  Worker {worker_id}: GPUs {gpu_list}")
+
             # Start worker threads
             workers = []
             for worker_id in range(self.parallel_workers):
@@ -274,6 +281,9 @@ class SweepRunner:
                 )
                 worker.start()
                 workers.append(worker)
+
+                with self.lock:
+                    print(f"Started Worker {worker_id} with CUDA_VISIBLE_DEVICES={gpu_devices}")
 
             # Wait for all workers to complete
             for worker in workers:

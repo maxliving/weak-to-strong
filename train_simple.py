@@ -385,6 +385,18 @@ def main(
     print(f"Learning rate: {lr}")
     print(f"Batch size: {batch_size}")
     print(f"Epochs: {epochs}")
+
+    # Log GPU visibility for parallel execution verification
+    import os
+    cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', 'not set')
+    print(f"CUDA_VISIBLE_DEVICES: {cuda_visible}")
+
+    import torch
+    if torch.cuda.is_available():
+        print(f"PyTorch sees {torch.cuda.device_count()} GPU(s)")
+        for i in range(torch.cuda.device_count()):
+            print(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
+
     print("="*60 + "\n")
     test_results, weak_ds = train_and_save_model(
         model_config,
