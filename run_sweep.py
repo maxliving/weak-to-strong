@@ -10,6 +10,8 @@ import subprocess
 import sys
 import os
 import argparse
+import threading
+import queue
 from dataclasses import dataclass
 from typing import List, Optional, Set, Tuple
 from datetime import datetime
@@ -81,7 +83,8 @@ class SweepRunner:
                  results_folder: str,
                  dry_run: bool = False,
                  wandb_entity: Optional[str] = None,
-                 wandb_project: str = "weak-to-strong-mixing"):
+                 wandb_project: str = "weak-to-strong-mixing",
+                 parallel_workers: int = 1):
         self.n_docs = n_docs
         self.n_test_docs = n_test_docs
         self.eval_every = eval_every
@@ -90,9 +93,11 @@ class SweepRunner:
         self.dry_run = dry_run
         self.wandb_entity = wandb_entity
         self.wandb_project = wandb_project
+        self.parallel_workers = parallel_workers
 
         self.completed_runs: Set[ExperimentConfig] = set()
         self.failed_runs: List[ExperimentConfig] = []
+        self.lock = threading.Lock()  # For thread-safe updates
 
         # Fetch existing runs from W&B if available
         if wandb_entity and WANDB_AVAILABLE:
@@ -166,15 +171,18 @@ class SweepRunner:
             print(f"⚠ Warning: Could not fetch W&B runs: {e}")
             print("  Continuing without W&B check...")
 
-    def run_experiment(self, config: ExperimentConfig) -> bool:
+    def run_experiment(self, config: ExperimentConfig, worker_id: int = 0, gpu_devices: str = None) -> bool:
         """Run a single experiment. Returns True if successful."""
-        print(f"\n{'='*60}")
-        print(f"Running: {config.description()}")
-        print(f"{'='*60}")
+        with self.lock:
+            if config in self.completed_runs:
+                print(f"[Worker {worker_id}] ⊙ Already completed, skipping: {config.description()}")
+                return True
 
-        if config in self.completed_runs:
-            print(f"⊙ Already completed, skipping")
-            return True
+            print(f"\n{'='*60}")
+            print(f"[Worker {worker_id}] Running: {config.description()}")
+            if gpu_devices:
+                print(f"[Worker {worker_id}] GPUs: {gpu_devices}")
+            print(f"{'='*60}")
 
         # Build command
         cmd = [
@@ -197,25 +205,97 @@ class SweepRunner:
             cmd.append(f"--mix_ratio={config.mix_ratio}")
             cmd.append(f"--mix_strategy=sample")
 
-        print(f"Command: {' '.join(cmd)}")
+        with self.lock:
+            print(f"[Worker {worker_id}] Command: {' '.join(cmd)}")
 
         if self.dry_run:
-            print("✓ [DRY RUN] Would execute")
+            with self.lock:
+                print(f"[Worker {worker_id}] ✓ [DRY RUN] Would execute")
             return True
 
-        # Execute
+        # Execute with GPU assignment
+        env = os.environ.copy()
+        if gpu_devices:
+            env['CUDA_VISIBLE_DEVICES'] = gpu_devices
+
         try:
-            result = subprocess.run(cmd, check=True)
-            print(f"✓ Completed successfully")
-            self.completed_runs.add(config)
+            result = subprocess.run(cmd, check=True, env=env)
+            with self.lock:
+                print(f"[Worker {worker_id}] ✓ Completed successfully: {config.description()}")
+                self.completed_runs.add(config)
             return True
         except subprocess.CalledProcessError as e:
-            print(f"✗ Failed with exit code {e.returncode}")
-            self.failed_runs.append(config)
+            with self.lock:
+                print(f"[Worker {worker_id}] ✗ Failed with exit code {e.returncode}: {config.description()}")
+                self.failed_runs.append(config)
             return False
         except KeyboardInterrupt:
-            print(f"\n⚠ Interrupted by user")
+            with self.lock:
+                print(f"\n[Worker {worker_id}] ⚠ Interrupted by user")
             raise
+
+    def worker_thread(self, worker_id: int, experiment_queue: queue.Queue, gpu_devices: str):
+        """Worker thread that processes experiments from the queue."""
+        while True:
+            try:
+                # Get next experiment from queue (non-blocking with timeout)
+                try:
+                    experiment = experiment_queue.get(timeout=1)
+                except queue.Empty:
+                    # Queue is empty, worker is done
+                    break
+
+                # Run the experiment
+                self.run_experiment(experiment, worker_id=worker_id, gpu_devices=gpu_devices)
+
+                # Mark task as done
+                experiment_queue.task_done()
+
+            except Exception as e:
+                with self.lock:
+                    print(f"[Worker {worker_id}] ✗ Exception: {e}")
+                experiment_queue.task_done()
+
+    def run_parallel(self, experiments: List[ExperimentConfig]):
+        """Run experiments in parallel using multiple workers."""
+        if self.parallel_workers <= 1:
+            # Sequential execution
+            for i, experiment in enumerate(experiments, 1):
+                print(f"\n[{i}/{len(experiments)}] ", end="")
+                self.run_experiment(experiment)
+        else:
+            # Parallel execution
+            print(f"\nRunning with {self.parallel_workers} parallel workers")
+
+            # Create queue and add all experiments
+            experiment_queue = queue.Queue()
+            for experiment in experiments:
+                experiment_queue.put(experiment)
+
+            # Calculate GPU assignment for each worker
+            # Assuming 8 GPUs total, split evenly across workers
+            total_gpus = 8
+            gpus_per_worker = total_gpus // self.parallel_workers
+
+            # Start worker threads
+            workers = []
+            for worker_id in range(self.parallel_workers):
+                # Assign GPUs to this worker
+                start_gpu = worker_id * gpus_per_worker
+                end_gpu = start_gpu + gpus_per_worker
+                gpu_devices = ",".join(str(i) for i in range(start_gpu, end_gpu))
+
+                # Create and start worker thread
+                worker = threading.Thread(
+                    target=self.worker_thread,
+                    args=(worker_id, experiment_queue, gpu_devices)
+                )
+                worker.start()
+                workers.append(worker)
+
+            # Wait for all workers to complete
+            for worker in workers:
+                worker.join()
 
     def print_summary(self, total_planned: int):
         """Print summary of sweep results."""
@@ -371,6 +451,9 @@ def main():
     # Dry run mode (set to True to preview without executing)
     DRY_RUN = False
 
+    # Parallel execution (set to 2 for dual parallel runs on 8 GPUs)
+    PARALLEL_WORKERS = 2
+
     # Log file configuration
     now = datetime.now()
     LOG_FILE = f"sweep_log_{now.strftime('%Y-%m-%d-%H%M%S')}.txt"
@@ -445,16 +528,15 @@ def main():
         results_folder=RESULTS_FOLDER,
         dry_run=DRY_RUN,
         wandb_entity=WANDB_ENTITY,
-        wandb_project=WANDB_PROJECT
+        wandb_project=WANDB_PROJECT,
+        parallel_workers=PARALLEL_WORKERS
     )
 
     print(f"\nStarting sweep at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print()
 
     try:
-        for i, experiment in enumerate(all_experiments, 1):
-            print(f"\n[{i}/{len(all_experiments)}] ", end="")
-            runner.run_experiment(experiment)
+        runner.run_parallel(all_experiments)
     except KeyboardInterrupt:
         print("\n\nSweep interrupted by user")
     finally:
