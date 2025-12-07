@@ -17,8 +17,10 @@ import torch
 from datasets import load_from_disk
 
 from weak_to_strong.common import get_tokenizer
-from weak_to_strong.model import TransformerPredictor, ModelConfig
-from weak_to_strong.train import train_model_config_from_base_model_config
+from weak_to_strong.datasets import tokenize_dataset
+from weak_to_strong.eval import eval_model_acc
+from weak_to_strong.model import TransformerWithHead
+from weak_to_strong.train import ModelConfig
 
 
 def load_weak_model_predictions(labels_path: str, model_name: str = "weak") -> pd.DataFrame:
@@ -71,42 +73,46 @@ def generate_base_model_predictions(
     # Get tokenizer
     tokenizer = get_tokenizer(model_size)
 
-    # Create model config
-    base_config = ModelConfig(
-        name=model_size,
-        default_lr=1e-5,
-        eval_batch_size=batch_size,
-        custom_kwargs={
-            "torch_dtype": torch.bfloat16 if torch.cuda.is_available() else torch.float32
-        }
-    )
-
-    train_config = train_model_config_from_base_model_config(base_config, max_ctx=max_ctx)
+    # Tokenize the dataset if not already tokenized
+    if 'input_ids' not in weak_labels_ds.column_names:
+        print("Tokenizing dataset...")
+        weak_labels_ds = tokenize_dataset(weak_labels_ds, tokenizer, max_ctx)
 
     # Determine number of classes from the weak_labels dataset
     n_labels = len(weak_labels_ds[0]['soft_label']) if 'soft_label' in weak_labels_ds[0] else 2
 
-    # Load base model (no fine-tuning)
-    predictor = TransformerPredictor(
-        model_config=train_config,
-        n_labels=n_labels
+    # Create model config
+    model_config = ModelConfig(
+        name=model_size,
+        default_lr=1e-5,
+        eval_batch_size=batch_size,
     )
+
+    # Load base model (no fine-tuning)
+    print(f"Initializing {model_size} model...")
+    model = TransformerWithHead(
+        model_config.name,
+        n_labels=n_labels,
+        **model_config.custom_kwargs if model_config.custom_kwargs else {}
+    )
+
+    # Move to GPU if available
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = model.to(device)
 
     print(f"Running inference on {len(weak_labels_ds)} examples...")
 
-    # Get predictions
-    with torch.no_grad():
-        results = predictor.predict(weak_labels_ds)
+    # Get predictions using eval_model_acc
+    results_ds = eval_model_acc(model, weak_labels_ds, batch_size, dataset_name=f"{model_name} (base)")
 
     # Convert to DataFrame
     records = []
-    for i, (example, soft_label) in enumerate(zip(weak_labels_ds, results.predictions)):
-        hard_label = int(soft_label > 0.5) if n_labels == 2 else int(soft_label.argmax())
+    for i, result in enumerate(results_ds):
         records.append({
             'idx': i,
-            'txt': example.get('txt', ''),
-            f'{model_name}_soft_label': float(soft_label) if n_labels == 2 else float(soft_label.max()),
-            f'{model_name}_hard_label': hard_label,
+            'txt': result['txt'],
+            f'{model_name}_soft_label': result['soft_label'][1] if n_labels == 2 else max(result['soft_label']),
+            f'{model_name}_hard_label': result['hard_label'],
         })
 
     return pd.DataFrame(records)
