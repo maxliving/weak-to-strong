@@ -3,8 +3,8 @@
 Find agreement/disagreement between two fine-tuned models (weak vs strong).
 
 This script:
-1. Loads predictions from a fine-tuned weak model (from results.pkl)
-2. Loads predictions from a fine-tuned strong model (from results.pkl)
+1. Loads a fine-tuned weak model from checkpoint and runs fresh inference
+2. Loads a fine-tuned strong model from checkpoint and runs fresh inference
 3. Identifies where they agree or disagree
 4. Exports agreement/disagreement analysis to CSV files
 
@@ -23,6 +23,12 @@ from typing import Dict, Optional
 
 import pandas as pd
 import wandb
+import torch
+from datasets import load_from_disk
+
+from weak_to_strong.datasets import load_dataset
+from weak_to_strong.model import TransformerWithHead
+from weak_to_strong.eval import eval_model_acc
 
 
 def resolve_checkpoint_path(
@@ -51,11 +57,13 @@ def resolve_checkpoint_path(
     # Check if it's already a valid path
     path = Path(identifier)
     if path.exists():
-        results_pkl = path / "results.pkl"
-        if results_pkl.exists():
+        # Check for model checkpoint (either in root or best_checkpoint/)
+        model_file = path / "pytorch_model.bin"
+        best_model_file = path / "best_checkpoint" / "pytorch_model.bin"
+        if model_file.exists() or best_model_file.exists():
             return str(path.absolute())
         else:
-            print(f"Warning: {path} exists but doesn't contain results.pkl")
+            print(f"Warning: {path} exists but doesn't contain pytorch_model.bin")
 
     # Try to resolve as WandB run
     try:
@@ -93,18 +101,24 @@ def resolve_checkpoint_path(
 
             # Try with "default" subfolder first (most common)
             checkpoint_path = Path(results_base_dir) / "default" / run_name
-            if checkpoint_path.exists() and (checkpoint_path / "results.pkl").exists():
-                return str(checkpoint_path.absolute())
+            if checkpoint_path.exists():
+                model_file = checkpoint_path / "pytorch_model.bin"
+                best_model_file = checkpoint_path / "best_checkpoint" / "pytorch_model.bin"
+                if model_file.exists() or best_model_file.exists():
+                    return str(checkpoint_path.absolute())
 
             # Try without subfolder
             checkpoint_path = Path(results_base_dir) / run_name
-            if checkpoint_path.exists() and (checkpoint_path / "results.pkl").exists():
-                return str(checkpoint_path.absolute())
+            if checkpoint_path.exists():
+                model_file = checkpoint_path / "pytorch_model.bin"
+                best_model_file = checkpoint_path / "best_checkpoint" / "pytorch_model.bin"
+                if model_file.exists() or best_model_file.exists():
+                    return str(checkpoint_path.absolute())
 
             raise ValueError(
-                f"Found WandB run '{run_name}' but couldn't find checkpoint directory.\n"
+                f"Found WandB run '{run_name}' but couldn't find checkpoint directory with model.\n"
                 f"Tried:\n  - {results_base_dir}/default/{run_name}\n  - {results_base_dir}/{run_name}\n"
-                f"Make sure the checkpoint was saved locally."
+                f"Make sure the checkpoint was saved locally with pytorch_model.bin"
             )
 
     except Exception as e:
@@ -117,62 +131,110 @@ def resolve_checkpoint_path(
         f"  - A full path to a checkpoint directory\n"
         f"  - A WandB run ID (8 characters)\n"
         f"  - A WandB run name\n"
-        f"\nMake sure the checkpoint directory contains results.pkl"
+        f"\nMake sure the checkpoint directory contains pytorch_model.bin"
     )
 
 
-def load_model_predictions_from_pkl(
+def generate_model_predictions(
     checkpoint_path: str,
     model_name: str = "model",
-    use_test_results: bool = True
+    dataset_name: str = "boolq",
+    n_test_docs: int = 10000,
+    batch_size: int = 32,
+    max_ctx: int = 1024,
+    use_best_checkpoint: bool = True
 ) -> pd.DataFrame:
-    """Load fine-tuned model predictions from results.pkl file.
+    """Generate fresh predictions from a fine-tuned model checkpoint.
 
     Args:
-        checkpoint_path: Path to the checkpoint directory containing results.pkl
+        checkpoint_path: Path to the checkpoint directory containing pytorch_model.bin
         model_name: Name to use for this model in column names (e.g., "weak", "strong")
-        use_test_results: If True, load 'test_results'; if False, load 'inference_results'
+        dataset_name: Name of the dataset (e.g., "boolq")
+        n_test_docs: Number of test documents to evaluate
+        batch_size: Batch size for inference
+        max_ctx: Maximum context length
+        use_best_checkpoint: If True, load from best_checkpoint/; if False, load from root
 
     Returns:
         DataFrame with columns: idx, txt, {model_name}_soft_label, {model_name}_hard_label, ground_truth
 
     Raises:
-        FileNotFoundError: If checkpoint_path or results.pkl doesn't exist
-        KeyError: If required keys are missing from results.pkl
-        ValueError: If results data is empty or malformed
+        FileNotFoundError: If checkpoint directory or model file doesn't exist
+        ValueError: If model loading fails
     """
     # Validate checkpoint path
     checkpoint_path = Path(checkpoint_path)
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"Checkpoint directory not found: {checkpoint_path}")
 
-    # Construct results.pkl path
-    results_pkl_path = checkpoint_path / "results.pkl"
-    if not results_pkl_path.exists():
+    # Load config
+    config_path = checkpoint_path / "config.json"
+    if config_path.exists():
+        with open(config_path, "r") as f:
+            config = json.load(f)
+            dataset_name = config.get("ds_name", dataset_name)
+            n_test_docs = config.get("n_test_docs", n_test_docs)
+            batch_size = config.get("batch_size", batch_size)
+            max_ctx = config.get("max_ctx", max_ctx)
+            model_size = config.get("model_size", "gpt2")
+            print(f"Loaded config: dataset={dataset_name}, model={model_size}, n_test_docs={n_test_docs}")
+
+    # Determine model checkpoint file
+    if use_best_checkpoint:
+        model_checkpoint_dir = checkpoint_path / "best_checkpoint"
+        if not model_checkpoint_dir.exists():
+            print(f"Warning: best_checkpoint/ not found, using root checkpoint")
+            model_checkpoint_dir = checkpoint_path
+    else:
+        model_checkpoint_dir = checkpoint_path
+
+    model_file = model_checkpoint_dir / "pytorch_model.bin"
+    if not model_file.exists():
         raise FileNotFoundError(
-            f"results.pkl not found at: {results_pkl_path}\n"
-            f"Make sure the model was trained and evaluated with save_path set."
+            f"Model checkpoint not found at: {model_file}\n"
+            f"Make sure the model was trained and saved."
         )
 
-    # Load pickle file
-    print(f"Loading predictions from {results_pkl_path}...")
-    with open(results_pkl_path, "rb") as f:
-        results_data = pickle.load(f)
+    print(f"Loading model from {model_checkpoint_dir}...")
 
-    # Select dataset (test_results or inference_results)
-    dataset_key = "test_results" if use_test_results else "inference_results"
-    if dataset_key not in results_data:
-        raise KeyError(
-            f"'{dataset_key}' not found in results.pkl. "
-            f"Available keys: {list(results_data.keys())}"
+    # Load the model
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+
+    # Initialize model from pretrained
+    model = TransformerWithHead.from_pretrained(
+        model_size,
+        num_labels=2
+    )
+
+    # Load fine-tuned weights
+    state_dict = torch.load(model_file, map_location=device)
+    model.load_state_dict(state_dict)
+    model = model.to(device)
+    model.eval()
+
+    print(f"Model loaded successfully")
+
+    # Load test dataset
+    print(f"Loading test dataset: {dataset_name}...")
+    test_ds = load_dataset(
+        dataset_name,
+        split_sizes=dict(train=0, test=n_test_docs),
+        seed=0
+    )["test"]
+
+    print(f"Running inference on {len(test_ds)} examples...")
+
+    # Run evaluation
+    with torch.no_grad():
+        predictions_ds = eval_model_acc(
+            model=model,
+            ds=test_ds,
+            eval_batch_size=batch_size,
+            dataset_name=dataset_name
         )
 
-    predictions_ds = results_data[dataset_key]
-
-    if predictions_ds is None or len(predictions_ds) == 0:
-        raise ValueError(f"No predictions found in '{dataset_key}'")
-
-    print(f"Loaded {len(predictions_ds)} predictions from {dataset_key}")
+    print(f"Generated {len(predictions_ds)} predictions")
 
     # Convert to DataFrame
     records = []
@@ -221,20 +283,18 @@ def find_agreement_disagreement(
     dataset_type = "test set" if use_test_results else "inference set (train2)"
     print(f"\n=== Comparing {weak_name} vs {strong_name} on {dataset_type} ===\n")
 
-    # Load weak model predictions
-    print(f"Loading {weak_name} model predictions...")
-    weak_df = load_model_predictions_from_pkl(
+    # Generate weak model predictions
+    print(f"\n=== Generating {weak_name} model predictions ===")
+    weak_df = generate_model_predictions(
         weak_checkpoint_path,
-        model_name=weak_name,
-        use_test_results=use_test_results
+        model_name=weak_name
     )
 
-    # Load strong model predictions
-    print(f"Loading {strong_name} model predictions...")
-    strong_df = load_model_predictions_from_pkl(
+    # Generate strong model predictions
+    print(f"\n=== Generating {strong_name} model predictions ===")
+    strong_df = generate_model_predictions(
         strong_checkpoint_path,
-        model_name=strong_name,
-        use_test_results=use_test_results
+        model_name=strong_name
     )
 
     # Validate alignment
