@@ -190,15 +190,23 @@ def generate_model_predictions(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # Load fine-tuned model directly from checkpoint directory
-    # from_pretrained() automatically handles:
-    # - Single-file checkpoints (pytorch_model.bin)
-    # - Sharded checkpoints (pytorch_model-XXXXX-of-XXXXX.bin)
-    # - Safe tensors format
-    model = TransformerWithHead.from_pretrained(
-        str(model_checkpoint_dir),
-        num_labels=2
-    )
+    # Initialize model architecture (using base model name)
+    model = TransformerWithHead(model_size, num_labels=2)
+
+    # Load fine-tuned weights from checkpoint
+    # This handles both single-file and sharded checkpoints
+    checkpoint_file = model_checkpoint_dir / "pytorch_model.bin"
+    if checkpoint_file.exists():
+        # Single file checkpoint
+        print("Loading single-file checkpoint...")
+        state_dict = torch.load(checkpoint_file, map_location=device)
+        model.load_state_dict(state_dict)
+    else:
+        # Sharded checkpoint
+        print("Loading sharded checkpoint...")
+        from transformers.modeling_utils import load_sharded_checkpoint
+        load_sharded_checkpoint(model, str(model_checkpoint_dir))
+
     model = model.to(device)
     model.eval()
 
