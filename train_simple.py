@@ -237,6 +237,7 @@ def main(
         weak_model_config = config.copy()
         weak_model_config["model_size"] = weak_model_size
         weak_model_config["loss"] = "xent"
+        weak_model_config["mix_ratio"] = 1.0  # Weak labels come from ground truth runs
         if use_default_lr:
             weak_model_config["lr"] = MODELS_DICT[weak_model_size].default_lr
 
