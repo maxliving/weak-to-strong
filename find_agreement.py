@@ -29,6 +29,7 @@ from datasets import load_from_disk
 from weak_to_strong.datasets import load_dataset, tokenize_dataset
 from weak_to_strong.model import TransformerWithHead
 from weak_to_strong.eval import eval_model_acc
+from weak_to_strong.common import get_tokenizer
 
 
 def resolve_checkpoint_path(
@@ -223,11 +224,14 @@ def generate_model_predictions(
         seed=0
     )["test"]
 
-    # Tokenize dataset
+    # Get tokenizer and tokenize dataset
+    print(f"Getting tokenizer for {model_size}...")
+    tokenizer = get_tokenizer(model_size)
+
     print(f"Tokenizing {len(test_ds)} examples...")
     test_ds = tokenize_dataset(
         test_ds,
-        tokenizer=model.tokenizer,
+        tokenizer=tokenizer,
         max_ctx=max_ctx
     )
 
