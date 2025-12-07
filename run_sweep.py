@@ -520,15 +520,8 @@ def main():
     print(f"  - Priority (gpt2-large): {len(priority_experiments)}")
     print(f"  - Large (gpt2-xl): {len(last_experiments)}")
 
-    if DRY_RUN:
-        print("\n⚠ DRY RUN MODE - No experiments will be executed")
-        print("\nPlanned experiments:")
-        for i, exp in enumerate(all_experiments, 1):
-            print(f"  {i}. {exp.description()}")
-        return
-
     # ========================================================================
-    # RUN EXPERIMENTS
+    # INITIALIZE RUNNER (to load completed runs from W&B)
     # ========================================================================
 
     runner = SweepRunner(
@@ -542,6 +535,36 @@ def main():
         wandb_project=WANDB_PROJECT,
         parallel_workers=PARALLEL_WORKERS
     )
+
+    if DRY_RUN:
+        print("\n⚠ DRY RUN MODE - No experiments will be executed")
+        print("\nExperiment status:")
+
+        to_run = []
+        already_completed = []
+
+        for i, exp in enumerate(all_experiments, 1):
+            if exp in runner.completed_runs:
+                already_completed.append((i, exp))
+            else:
+                to_run.append((i, exp))
+
+        print(f"\n✓ Already completed ({len(already_completed)}):")
+        for i, exp in already_completed:
+            print(f"  {i}. {exp.description()}")
+
+        print(f"\n→ To run ({len(to_run)}):")
+        for i, exp in to_run:
+            print(f"  {i}. {exp.description()}")
+
+        print(f"\nTotal: {len(all_experiments)} experiments")
+        print(f"  - Will skip: {len(already_completed)}")
+        print(f"  - Will run: {len(to_run)}")
+        return
+
+    # ========================================================================
+    # RUN EXPERIMENTS
+    # ========================================================================
 
     print(f"\nStarting sweep at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print()
