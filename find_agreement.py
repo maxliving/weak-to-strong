@@ -432,6 +432,57 @@ def print_examples(df: pd.DataFrame, n: int, title: str, model1_name: str, model
         print(f"  Confidence diff: {row['confidence_diff']:.4f}")
 
 
+def export_disagreement_rankings(
+    results: Dict[str, pd.DataFrame],
+    output_file: str
+) -> None:
+    """Export disagreement rankings in training-ready format.
+
+    This function exports a CSV file with indices sorted by disagreement
+    (confidence_diff descending), suitable for use with the disagreement-based
+    mixing strategy in training.
+
+    Args:
+        results: Dictionary containing 'all' DataFrame with predictions and confidence_diff
+        output_file: Path to output CSV file
+
+    The output CSV contains:
+        - idx: Example index
+        - confidence_diff: Absolute difference in soft label probabilities
+    """
+    print("\n" + "="*80)
+    print("EXPORTING DISAGREEMENT RANKINGS")
+    print("="*80)
+
+    # Get all predictions
+    all_df = results['all']
+
+    # Sort by confidence_diff (descending - highest disagreement first)
+    sorted_df = all_df.sort_values('confidence_diff', ascending=False)
+
+    # Extract only idx and confidence_diff
+    rankings_df = sorted_df[['idx', 'confidence_diff']].copy()
+
+    # Save to CSV
+    rankings_df.to_csv(output_file, index=False)
+
+    # Print summary statistics
+    print(f"\nSaved disagreement rankings to: {output_file}")
+    print(f"Total examples: {len(rankings_df)}")
+    print(f"\nConfidence difference statistics:")
+    print(f"  Min:    {rankings_df['confidence_diff'].min():.6f}")
+    print(f"  Max:    {rankings_df['confidence_diff'].max():.6f}")
+    print(f"  Mean:   {rankings_df['confidence_diff'].mean():.6f}")
+    print(f"  Median: {rankings_df['confidence_diff'].median():.6f}")
+    print(f"  Std:    {rankings_df['confidence_diff'].std():.6f}")
+
+    # Show top 10 indices by disagreement
+    print(f"\nTop 10 examples by disagreement:")
+    print(rankings_df.head(10).to_string(index=False))
+
+    print("="*80)
+
+
 def main(
     weak_checkpoint_path: Optional[str] = None,
     strong_checkpoint_path: Optional[str] = None,
@@ -576,6 +627,11 @@ def main(
         print(f"  all: {full_output} ({len(results['all'])} examples)")
 
         print("="*80)
+
+        # Export disagreement rankings for use in disagreement-based training
+        rankings_file = os.path.join(output_dir, "disagreement_rankings.csv")
+        export_disagreement_rankings(results, rankings_file)
+
         print("\nDone!")
 
     except (FileNotFoundError, KeyError, ValueError) as e:

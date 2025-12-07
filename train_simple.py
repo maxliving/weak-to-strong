@@ -132,6 +132,8 @@ def get_config_foldername(config: dict) -> str:
             return "mxr"
         elif key == "model_size":
             return "ms"
+        elif key == "labeling_budget":
+            return "lb"
         # Default: use first letter of each word
         return "".join(word[0] for word in key.split("_"))
 
@@ -182,6 +184,9 @@ def main(
     # Mixed supervision parameters
     mix_ratio: float = 1.0,  # Ground truth fraction: 1.0=pure GT (default), <1.0=mixed supervision
     mix_strategy: str = 'sample',  # 'sample' for sample-level or 'label' for label-level mixing
+    # Disagreement-based mixing parameters
+    labeling_budget: Optional[int] = None,  # Number of examples to label (disagreement strategy only)
+    disagreement_file: Optional[str] = None,  # Path to disagreement rankings CSV (disagreement strategy only)
     # Best checkpoint tracking
     min_delta: float = 0.0,
     restore_best_weights: bool = True,
@@ -227,11 +232,16 @@ def main(
         "lr_schedule": lr_schedule,
         "eval_every": eval_every,
         # "sweep_subfolder": sweep_subfolder,
-        "mix_ratio": mix_ratio,
         "mix_strategy": mix_strategy,
         # Best checkpoint params
         "min_delta": min_delta,
     }
+
+    # Add strategy-specific parameters to config
+    if mix_strategy == 'disagreement':
+        config["labeling_budget"] = labeling_budget
+    else:
+        config["mix_ratio"] = mix_ratio
 
     if weak_model_size is not None:
         weak_model_config = config.copy()
@@ -259,7 +269,25 @@ def main(
             f"Either use mix_ratio<1.0 for mixed supervision, or omit weak_labels_path for ground truth mode."
         )
 
-    if mix_ratio < 1.0 and weak_labels_path is None:
+    # Validation for mixed supervision
+    if mix_strategy == 'disagreement':
+        # Disagreement strategy validation
+        if labeling_budget is None:
+            raise ValueError(
+                "labeling_budget required for disagreement strategy. "
+                "Specify the number of examples to label with ground truth."
+            )
+        if disagreement_file is None:
+            raise ValueError(
+                "disagreement_file required for disagreement strategy. "
+                "Provide path to disagreement rankings CSV file."
+            )
+        if weak_labels_path is None:
+            raise ValueError(
+                "weak_labels_path required for disagreement strategy. "
+                "You can use --weak_model_size to auto-generate the path."
+            )
+    elif mix_ratio < 1.0 and weak_labels_path is None:
         raise ValueError(
             f"mix_ratio={mix_ratio} requires weak_labels_path to be provided. "
             f"To train on ground truth only, use mix_ratio=1.0 (default). "
@@ -276,19 +304,19 @@ def main(
     train_dataset, test_ds = dataset["train"], dataset["test"]
 
     # ============================================================================
-    # EXECUTION PATHS BASED ON mix_ratio:
-    # 1. Pure ground truth (mix_ratio=1.0):
+    # EXECUTION PATHS BASED ON mix_ratio AND mix_strategy:
+    # 1. Pure ground truth (mix_ratio=1.0 and mix_strategy != 'disagreement'):
     #    - Split train data in half: train1 for training, train2 for weak label generation
     #    - No mixing applied
     #    - weak_labels_path must be None (otherwise error)
     #
-    # 2. Mixed supervision (mix_ratio<1.0):
+    # 2. Mixed supervision (mix_ratio<1.0 OR mix_strategy=='disagreement'):
     #    - Load pre-computed weak labels from disk
     #    - Apply mixed supervision (combining weak + ground truth)
     #    - weak_labels_path must be provided (otherwise error)
     # ============================================================================
 
-    if mix_ratio == 1.0:
+    if mix_ratio == 1.0 and mix_strategy != 'disagreement':
         # PATH 1: Pure Ground Truth Mode
         # Split the training data in half for standard weak-to-strong setup
         # Note: weak_labels_path is guaranteed to be None by validation above
@@ -336,9 +364,11 @@ def main(
             ds_name=ds_name,
             weak_model_config=weak_model_config,
             n_test_docs=n_test_docs,
-            mix_ratio=mix_ratio,
+            mix_ratio=mix_ratio if mix_strategy != 'disagreement' else None,
             mix_strategy=mix_strategy,
             seed=seed,
+            labeling_budget=labeling_budget,
+            disagreement_file=disagreement_file,
         )
 
         config_name = get_config_foldername(config)
