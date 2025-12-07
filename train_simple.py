@@ -387,11 +387,9 @@ def main(
     print(f"Epochs: {epochs}")
 
     # Log GPU visibility for parallel execution verification
-    import os
     cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', 'not set')
     print(f"CUDA_VISIBLE_DEVICES: {cuda_visible}")
 
-    import torch
     if torch.cuda.is_available():
         print(f"PyTorch sees {torch.cuda.device_count()} GPU(s)")
         for i in range(torch.cuda.device_count()):
