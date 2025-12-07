@@ -17,6 +17,7 @@ Supports:
 import os
 import pickle
 import json
+import re
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -81,10 +82,16 @@ def resolve_checkpoint_path(
 
         if run_name:
             # Construct checkpoint path
-            # Try with "default" subfolder first (most common)
-            # strip the `default_` prefix from the run name
+            # Strip the `default_` prefix from the run name if present
             if run_name.startswith("default_"):
                 run_name = run_name[len("default_"):]
+
+            # Strip the date/time suffix from the run name
+            # Example: bs=32-dn=boolq-..._2025-12-07_06-16-54 -> bs=32-dn=boolq-...
+            # Pattern: _YYYY-MM-DD_HH-MM-SS
+            run_name = re.sub(r'_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}$', '', run_name)
+
+            # Try with "default" subfolder first (most common)
             checkpoint_path = Path(results_base_dir) / "default" / run_name
             if checkpoint_path.exists() and (checkpoint_path / "results.pkl").exists():
                 return str(checkpoint_path.absolute())
