@@ -348,7 +348,8 @@ def main(
     use_test_results: bool = True,
     output_dir: Optional[str] = None,
     show_examples: bool = True,
-    n_examples: int = 5
+    n_examples: int = 5,
+    results_base_dir: str = "./results"
 ):
     """Compare predictions from two fine-tuned models.
 
@@ -363,6 +364,7 @@ def main(
         output_dir: Output directory for CSVs (default: ./agreement_analysis/{weak_name}_vs_{strong_name})
         show_examples: Whether to print example agreements/disagreements
         n_examples: Number of examples to show
+        results_base_dir: Base directory where checkpoint results are stored (default: "./results")
     """
     # ========================================================================
     # VALIDATION
@@ -388,6 +390,7 @@ def main(
         print("  --output_dir='./output'         # Custom output directory")
         print("  --show_examples=True            # Show example predictions")
         print("  --n_examples=5                  # Number of examples to show")
+        print("  --results_base_dir='./results'  # Base directory for checkpoint results")
         return
 
     # Set default output directory
@@ -411,8 +414,8 @@ def main(
 
     try:
         # Resolve checkpoint paths (handles WandB run IDs/names)
-        weak_checkpoint_path = resolve_checkpoint_path(weak_checkpoint_path)
-        strong_checkpoint_path = resolve_checkpoint_path(strong_checkpoint_path)
+        weak_checkpoint_path = resolve_checkpoint_path(weak_checkpoint_path, results_base_dir=results_base_dir)
+        strong_checkpoint_path = resolve_checkpoint_path(strong_checkpoint_path, results_base_dir=results_base_dir)
 
         print(f"\nResolved paths:")
         print(f"  Weak:   {weak_checkpoint_path}")
