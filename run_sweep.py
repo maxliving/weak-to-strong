@@ -110,21 +110,21 @@ class SweepRunner:
             api = wandb.Api()
             runs = api.runs(f"{self.wandb_entity}/{self.wandb_project}")
 
-            skipped_count = 0
+            skipped_not_finished = 0
+            skipped_missing_config = 0
+
             for run in runs:
-                # Only consider finished runs
+                # Only consider finished runs (trust W&B state)
                 if run.state != "finished":
+                    skipped_not_finished += 1
                     continue
 
                 config = run.config
-                summary = run.summary._json_dict
 
                 # Extract experiment details from config
                 dataset = config.get('ds_name')
                 strong_model = config.get('model_size')
                 mix_ratio = config.get('mix_ratio')
-                n_docs = config.get('n_docs')
-                epochs = config.get('epochs', 2)  # Default to 2 if not specified
 
                 # Get weak model (could be in weak_model_size or weak_model.model_size)
                 weak_model = config.get('weak_model_size')
@@ -133,40 +133,22 @@ class SweepRunner:
 
                 # Skip if missing essential info
                 if dataset is None or strong_model is None or mix_ratio is None:
+                    skipped_missing_config += 1
                     continue
 
-                # Verify run completed sufficient training steps
-                # Calculate expected steps: (n_docs / batch_size) * epochs
-                batch_size = config.get('batch_size', 32)
-                expected_steps = (n_docs / batch_size) * epochs if n_docs else None
-
-                # Check if run has final accuracy metric (indicates completion)
-                has_final_metric = ('eval_accuracy' in summary or
-                                   'final/strong_acc' in summary or
-                                   'best_checkpoint/final_test_acc' in summary)
-
-                # Check step count if available
-                step_count = summary.get('step', summary.get('_step', 0))
-                sufficient_steps = True
-                if expected_steps and step_count > 0:
-                    # Allow 10% tolerance for step count differences
-                    sufficient_steps = step_count >= (expected_steps * 0.9)
-
-                # Only mark as completed if has final metrics AND sufficient steps
-                if has_final_metric and sufficient_steps:
-                    exp_config = ExperimentConfig(
-                        dataset=dataset,
-                        strong_model=strong_model,
-                        weak_model=weak_model if mix_ratio < 1.0 else None,
-                        mix_ratio=mix_ratio
-                    )
-                    self.completed_runs.add(exp_config)
-                else:
-                    skipped_count += 1
+                # Run finished successfully - add to completed runs
+                exp_config = ExperimentConfig(
+                    dataset=dataset,
+                    strong_model=strong_model,
+                    weak_model=weak_model if mix_ratio < 1.0 else None,
+                    mix_ratio=mix_ratio
+                )
+                self.completed_runs.add(exp_config)
 
             print(f"✓ Found {len(self.completed_runs)} completed runs in W&B")
-            if skipped_count > 0:
-                print(f"  (Skipped {skipped_count} incomplete/crashed runs)")
+            total_skipped = skipped_not_finished + skipped_missing_config
+            if total_skipped > 0:
+                print(f"  (Skipped {total_skipped} runs: {skipped_not_finished} not finished, {skipped_missing_config} missing config)")
         except Exception as e:
             print(f"⚠ Warning: Could not fetch W&B runs: {e}")
             print("  Continuing without W&B check...")
