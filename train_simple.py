@@ -238,8 +238,10 @@ def main(
         weak_model_config["model_size"] = weak_model_size
         weak_model_config["loss"] = "xent"
         weak_model_config["mix_ratio"] = 1.0  # Weak labels come from ground truth runs
-        if use_default_lr:
-            weak_model_config["lr"] = MODELS_DICT[weak_model_size].default_lr
+        # Always use the weak model's default LR and optimizer, since weak labels
+        # come from ground truth runs which use defaults
+        weak_model_config["lr"] = MODELS_DICT[weak_model_size].default_lr
+        weak_model_config["optim"] = MODELS_DICT[weak_model_size].default_optimizer
 
         weak_model_config_name = get_config_foldername(weak_model_config)
 

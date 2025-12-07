@@ -341,6 +341,17 @@ def generate_experiments(
     skip_configs = skip_configs or set()
 
     for dataset in datasets:
+        # 0. Ground truth runs for weak models (to generate weak labels)
+        for weak_model in weak_models:
+            config = ExperimentConfig(
+                dataset=dataset,
+                strong_model=weak_model,
+                weak_model=None,
+                mix_ratio=1.0
+            )
+            if (dataset, weak_model, None, 1.0) not in skip_configs:
+                experiments.append(config)
+
         for strong_model in strong_models:
             # 1. Ground truth run for strong model (mix_ratio=1.0)
             config = ExperimentConfig(
