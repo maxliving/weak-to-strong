@@ -82,6 +82,9 @@ def resolve_checkpoint_path(
         if run_name:
             # Construct checkpoint path
             # Try with "default" subfolder first (most common)
+            # strip the `default_` prefix from the run name
+            if run_name.startswith("default_"):
+                run_name = run_name[len("default_"):]
             checkpoint_path = Path(results_base_dir) / "default" / run_name
             if checkpoint_path.exists() and (checkpoint_path / "results.pkl").exists():
                 return str(checkpoint_path.absolute())
