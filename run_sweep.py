@@ -372,8 +372,8 @@ def main():
     DRY_RUN = False
 
     # Log file configuration
-	now = datetime.now()
-    LOG_FILE = f"sweep_log_{now.strftime('%Y-%m-%d-%H%M%S').txt"
+    now = datetime.now()
+    LOG_FILE = f"sweep_log_{now.strftime('%Y-%m-%d-%H%M%S')}.txt"
 
     # ========================================================================
     # SETUP LOGGING
