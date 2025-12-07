@@ -26,7 +26,7 @@ import wandb
 import torch
 from datasets import load_from_disk
 
-from weak_to_strong.datasets import load_dataset
+from weak_to_strong.datasets import load_dataset, tokenize_dataset
 from weak_to_strong.model import TransformerWithHead
 from weak_to_strong.eval import eval_model_acc
 
@@ -222,6 +222,14 @@ def generate_model_predictions(
         split_sizes=dict(train=0, test=n_test_docs),
         seed=0
     )["test"]
+
+    # Tokenize dataset
+    print(f"Tokenizing {len(test_ds)} examples...")
+    test_ds = tokenize_dataset(
+        test_ds,
+        tokenizer=model.tokenizer,
+        max_ctx=max_ctx
+    )
 
     print(f"Running inference on {len(test_ds)} examples...")
 
