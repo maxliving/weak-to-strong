@@ -345,6 +345,17 @@ def main(
         config["weak_model"] = weak_model_config
 
     save_path = os.path.join(results_folder, sweep_subfolder, config_name)
+
+    # Check if this run already completed (checkpoint exists)
+    if os.path.exists(os.path.join(save_path, "results.pkl")) and not force_retrain:
+        print(f"\n{'='*60}")
+        print(f"CHECKPOINT EXISTS - SKIPPING")
+        print(f"{'='*60}")
+        print(f"Found existing results at: {save_path}")
+        print(f"To retrain, use --force_retrain")
+        print(f"{'='*60}\n")
+        return
+
     logger.configure(
         name="{sweep_subfolder}_{config_name}_{datetime_now}",
         save_path=save_path,
