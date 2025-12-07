@@ -38,10 +38,15 @@ def load_weak_model_predictions(labels_path: str, model_name: str = "weak") -> p
     # Convert to DataFrame
     records = []
     for i, example in enumerate(ds):
+        soft_label = example.get('soft_label')
+        # If soft_label is a list (e.g., [0.3, 0.7]), extract probability of positive class
+        if isinstance(soft_label, list):
+            soft_label = soft_label[1]  # Probability of class 1
+
         records.append({
             'idx': i,
             'txt': example.get('txt', ''),
-            f'{model_name}_soft_label': example.get('soft_label'),
+            f'{model_name}_soft_label': float(soft_label),
             f'{model_name}_hard_label': example.get('hard_label'),
             'ground_truth': example.get('gt_label'),  # Ground truth label
         })
