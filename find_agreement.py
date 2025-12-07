@@ -270,6 +270,7 @@ def find_agreement_disagreement(
     weak_name: str = "weak",
     strong_name: str = "strong",
     use_test_results: bool = True,
+    use_best_checkpoint: bool = True,
     validate_alignment: bool = True
 ) -> Dict[str, pd.DataFrame]:
     """Find where two fine-tuned models agree/disagree on predictions.
@@ -280,6 +281,7 @@ def find_agreement_disagreement(
         weak_name: Name for weak model (used in column names)
         strong_name: Name for strong model (used in column names)
         use_test_results: If True, use test_results; if False, use inference_results
+        use_best_checkpoint: If True, load from best_checkpoint/; if False, load from root
         validate_alignment: If True, validate that both models used same test examples
 
     Returns:
@@ -295,14 +297,16 @@ def find_agreement_disagreement(
     print(f"\n=== Generating {weak_name} model predictions ===")
     weak_df = generate_model_predictions(
         weak_checkpoint_path,
-        model_name=weak_name
+        model_name=weak_name,
+        use_best_checkpoint=use_best_checkpoint
     )
 
     # Generate strong model predictions
     print(f"\n=== Generating {strong_name} model predictions ===")
     strong_df = generate_model_predictions(
         strong_checkpoint_path,
-        model_name=strong_name
+        model_name=strong_name,
+        use_best_checkpoint=use_best_checkpoint
     )
 
     # Validate alignment
@@ -424,6 +428,7 @@ def main(
     weak_name: str = "weak",
     strong_name: str = "strong",
     use_test_results: bool = True,
+    use_best_checkpoint: bool = True,
     output_dir: Optional[str] = None,
     show_examples: bool = True,
     n_examples: int = 5,
@@ -439,6 +444,7 @@ def main(
         weak_name: Display name for weak model (default: "weak")
         strong_name: Display name for strong model (default: "strong")
         use_test_results: Use test_results (True) or inference_results (False)
+        use_best_checkpoint: Load from best_checkpoint/ (True) or root checkpoint (False)
         output_dir: Output directory for CSVs (default: ./agreement_analysis/{weak_name}_vs_{strong_name})
         show_examples: Whether to print example agreements/disagreements
         n_examples: Number of examples to show
@@ -506,6 +512,7 @@ def main(
             weak_name=weak_name,
             strong_name=strong_name,
             use_test_results=use_test_results,
+            use_best_checkpoint=use_best_checkpoint,
             validate_alignment=True
         )
 

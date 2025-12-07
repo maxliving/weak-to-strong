@@ -133,6 +133,15 @@ def train_model(
                     'best_checkpoint/best_eval_acc': best_eval_acc,
                     'best_checkpoint/improvement': improvement,
                 })
+
+            # Save intermediate checkpoint at every eval step
+            if save_path:
+                step_checkpoint_path = os.path.join(save_path, f"checkpoint_step_{step+1}")
+                os.makedirs(step_checkpoint_path, exist_ok=True)
+                (model if hasattr(model, "save_pretrained") else model.module).save_pretrained(
+                    step_checkpoint_path, safe_serialization=False
+                )
+                print(f"[Checkpoint] Saved step {step+1} to {step_checkpoint_path}")
         all_logits = []
         all_labels = []
         for i in range(batch_size // minibatch_size):
