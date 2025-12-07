@@ -107,8 +107,9 @@ class SweepRunner:
         """Load existing runs from W&B to avoid re-running."""
         try:
             print(f"\nFetching existing runs from W&B ({self.wandb_entity}/{self.wandb_project})...")
-            api = wandb.Api()
-            runs = api.runs(f"{self.wandb_entity}/{self.wandb_project}")
+            # Force fresh data from API (no caching)
+            api = wandb.Api(timeout=60)
+            runs = list(api.runs(f"{self.wandb_entity}/{self.wandb_project}", per_page=500))
 
             skipped_not_finished = 0
             skipped_missing_config = 0
