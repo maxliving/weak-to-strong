@@ -58,18 +58,14 @@ def resolve_checkpoint_path(
     # Check if it's already a valid path
     path = Path(identifier)
     if path.exists():
-        # Check for model checkpoint (either single file or sharded)
-        # Single file: pytorch_model.bin
-        # Sharded: pytorch_model.bin.index.json + pytorch_model-XXXXX-of-XXXXX.bin
-        model_file = path / "pytorch_model.bin"
-        model_index = path / "pytorch_model.bin.index.json"
-        best_model_file = path / "best_checkpoint" / "pytorch_model.bin"
-        best_model_index = path / "best_checkpoint" / "pytorch_model.bin.index.json"
+        # Check for transformers checkpoint (config.json is always present)
+        config_file = path / "config.json"
+        best_config = path / "best_checkpoint" / "config.json"
 
-        if model_file.exists() or model_index.exists() or best_model_file.exists() or best_model_index.exists():
+        if config_file.exists() or best_config.exists():
             return str(path.absolute())
         else:
-            print(f"Warning: {path} exists but doesn't contain pytorch_model.bin or sharded checkpoint")
+            print(f"Warning: {path} exists but doesn't contain a valid transformers checkpoint (no config.json)")
 
     # Try to resolve as WandB run
     try:
@@ -107,28 +103,18 @@ def resolve_checkpoint_path(
 
             # Try with "default" subfolder first (most common)
             checkpoint_path = Path(results_base_dir) / "default" / run_name
-            if checkpoint_path.exists():
-                model_file = checkpoint_path / "pytorch_model.bin"
-                model_index = checkpoint_path / "pytorch_model.bin.index.json"
-                best_model_file = checkpoint_path / "best_checkpoint" / "pytorch_model.bin"
-                best_model_index = checkpoint_path / "best_checkpoint" / "pytorch_model.bin.index.json"
-                if model_file.exists() or model_index.exists() or best_model_file.exists() or best_model_index.exists():
-                    return str(checkpoint_path.absolute())
+            if checkpoint_path.exists() and (checkpoint_path / "config.json").exists():
+                return str(checkpoint_path.absolute())
 
             # Try without subfolder
             checkpoint_path = Path(results_base_dir) / run_name
-            if checkpoint_path.exists():
-                model_file = checkpoint_path / "pytorch_model.bin"
-                model_index = checkpoint_path / "pytorch_model.bin.index.json"
-                best_model_file = checkpoint_path / "best_checkpoint" / "pytorch_model.bin"
-                best_model_index = checkpoint_path / "best_checkpoint" / "pytorch_model.bin.index.json"
-                if model_file.exists() or model_index.exists() or best_model_file.exists() or best_model_index.exists():
-                    return str(checkpoint_path.absolute())
+            if checkpoint_path.exists() and (checkpoint_path / "config.json").exists():
+                return str(checkpoint_path.absolute())
 
             raise ValueError(
                 f"Found WandB run '{run_name}' but couldn't find checkpoint directory with model.\n"
                 f"Tried:\n  - {results_base_dir}/default/{run_name}\n  - {results_base_dir}/{run_name}\n"
-                f"Make sure the checkpoint was saved locally with pytorch_model.bin"
+                f"Make sure the checkpoint was saved locally with config.json"
             )
 
     except Exception as e:
@@ -141,7 +127,7 @@ def resolve_checkpoint_path(
         f"  - A full path to a checkpoint directory\n"
         f"  - A WandB run ID (8 characters)\n"
         f"  - A WandB run name\n"
-        f"\nMake sure the checkpoint directory contains pytorch_model.bin or sharded checkpoint files"
+        f"\nMake sure the checkpoint directory contains a valid transformers model (config.json)"
     )
 
 
@@ -198,17 +184,6 @@ def generate_model_predictions(
     else:
         model_checkpoint_dir = checkpoint_path
 
-    # Check if checkpoint exists (either single file or sharded)
-    model_file = model_checkpoint_dir / "pytorch_model.bin"
-    model_index = model_checkpoint_dir / "pytorch_model.bin.index.json"
-
-    if not (model_file.exists() or model_index.exists()):
-        raise FileNotFoundError(
-            f"Model checkpoint not found at: {model_checkpoint_dir}\n"
-            f"Expected either pytorch_model.bin or pytorch_model.bin.index.json\n"
-            f"Make sure the model was trained and saved."
-        )
-
     print(f"Loading model from {model_checkpoint_dir}...")
 
     # Load the model
@@ -216,7 +191,10 @@ def generate_model_predictions(
     print(f"Using device: {device}")
 
     # Load fine-tuned model directly from checkpoint directory
-    # This handles both single-file and sharded checkpoints automatically
+    # from_pretrained() automatically handles:
+    # - Single-file checkpoints (pytorch_model.bin)
+    # - Sharded checkpoints (pytorch_model-XXXXX-of-XXXXX.bin)
+    # - Safe tensors format
     model = TransformerWithHead.from_pretrained(
         str(model_checkpoint_dir),
         num_labels=2
