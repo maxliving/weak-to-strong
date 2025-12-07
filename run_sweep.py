@@ -403,9 +403,7 @@ def main():
 
     # Datasets to sweep
     DATASETS = [
-        "boolq",
-        "sciq",
-        "anthropic_hh"
+        "sciq",  # Focus on sciq for gpt2-xl missing runs
     ]
 
     # Model configurations
@@ -416,11 +414,11 @@ def main():
     ]
 
     STRONG_MODELS_PRIORITY = [
-        "gpt2-large"  # Run first
+        # Empty - no priority models for this sweep
     ]
 
     STRONG_MODELS_LAST = [
-        "gpt2-xl"  # Run last (largest model)
+        "gpt2-xl"  # Run gpt2-xl experiments for sciq
     ]
 
     # Mix ratios to sweep
@@ -435,11 +433,8 @@ def main():
     # Experiments to skip (already completed)
     # Format: (dataset, strong_model, weak_model, mix_ratio)
     # Use None for weak_model in ground truth runs
-    SKIP_CONFIGS = {
-        ("boolq", "gpt2-large", "gpt2", 0.0),
-        ("boolq", "gpt2-large", "gpt2", 0.5),
-        ("boolq", "gpt2-large", "gpt2", 1.0),
-    }
+    # Empty - let W&B auto-skip completed runs
+    SKIP_CONFIGS = set()
 
     # Training parameters
     N_DOCS = 20000
