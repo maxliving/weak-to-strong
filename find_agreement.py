@@ -1,210 +1,266 @@
 #!/usr/bin/env python3
 """
-Find agreement/disagreement between a fine-tuned weak model and base strong model.
+Find agreement/disagreement between two fine-tuned models (weak vs strong).
 
 This script:
-1. Loads predictions from a fine-tuned weak model (from weak_labels directory)
-2. Runs inference on a base strong model to get its predictions
+1. Loads predictions from a fine-tuned weak model (from results.pkl)
+2. Loads predictions from a fine-tuned strong model (from results.pkl)
 3. Identifies where they agree or disagree
+4. Exports agreement/disagreement analysis to CSV files
+
+Supports:
+- Direct checkpoint paths
+- WandB run IDs
+- WandB run names
 """
 
 import os
+import pickle
+import json
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
 import pandas as pd
-import torch
-from datasets import load_from_disk
-
-from weak_to_strong.common import get_tokenizer
-from weak_to_strong.datasets import tokenize_dataset
-from weak_to_strong.eval import eval_model_acc, to_batch
-from weak_to_strong.model import TransformerWithHead
-from weak_to_strong.train import ModelConfig
-from transformers import AutoModelForCausalLM
-import numpy as np
+import wandb
 
 
-def load_weak_model_predictions(labels_path: str, model_name: str = "weak") -> pd.DataFrame:
-    """Load fine-tuned weak model predictions from weak_labels directory.
+def resolve_checkpoint_path(
+    identifier: str,
+    wandb_entity: str = "maxliving-personal",
+    wandb_project: str = "weak-to-strong-mixing",
+    results_base_dir: str = "./results"
+) -> str:
+    """Resolve a WandB run ID/name or path to a checkpoint directory.
 
     Args:
-        labels_path: Path to the weak_labels directory
-        model_name: Name to use for this model in column names
+        identifier: Can be:
+            - Full checkpoint path (e.g., "./results/default/bs=32-...")
+            - WandB run ID (e.g., "cr50yyzj")
+            - WandB run name (e.g., "default_bs=32-dn=boolq-...")
+        wandb_entity: WandB entity/username
+        wandb_project: WandB project name
+        results_base_dir: Base directory where results are stored
+
+    Returns:
+        Absolute path to checkpoint directory
+
+    Raises:
+        ValueError: If identifier cannot be resolved to a valid checkpoint
+    """
+    # Check if it's already a valid path
+    path = Path(identifier)
+    if path.exists():
+        results_pkl = path / "results.pkl"
+        if results_pkl.exists():
+            return str(path.absolute())
+        else:
+            print(f"Warning: {path} exists but doesn't contain results.pkl")
+
+    # Try to resolve as WandB run
+    try:
+        api = wandb.Api(timeout=60)
+
+        # Try as run ID (8 chars alphanumeric)
+        if len(identifier) == 8 and identifier.isalnum():
+            try:
+                run = api.run(f"{wandb_entity}/{wandb_project}/{identifier}")
+                run_name = run.name
+                print(f"Resolved WandB run ID '{identifier}' to run: {run_name}")
+            except Exception as e:
+                print(f"Could not find run ID '{identifier}': {e}")
+                run_name = None
+        else:
+            # Try as run name
+            runs = list(api.runs(f"{wandb_entity}/{wandb_project}", per_page=500))
+            matching_runs = [r for r in runs if r.name == identifier]
+            if matching_runs:
+                run_name = matching_runs[0].name
+                print(f"Found WandB run: {run_name}")
+            else:
+                run_name = None
+
+        if run_name:
+            # Construct checkpoint path
+            # Try with "default" subfolder first (most common)
+            checkpoint_path = Path(results_base_dir) / "default" / run_name
+            if checkpoint_path.exists() and (checkpoint_path / "results.pkl").exists():
+                return str(checkpoint_path.absolute())
+
+            # Try without subfolder
+            checkpoint_path = Path(results_base_dir) / run_name
+            if checkpoint_path.exists() and (checkpoint_path / "results.pkl").exists():
+                return str(checkpoint_path.absolute())
+
+            raise ValueError(
+                f"Found WandB run '{run_name}' but couldn't find checkpoint directory.\n"
+                f"Tried:\n  - {results_base_dir}/default/{run_name}\n  - {results_base_dir}/{run_name}\n"
+                f"Make sure the checkpoint was saved locally."
+            )
+
+    except Exception as e:
+        print(f"WandB API error: {e}")
+
+    # If we get here, couldn't resolve
+    raise ValueError(
+        f"Could not resolve '{identifier}' to a valid checkpoint path.\n"
+        f"Please provide either:\n"
+        f"  - A full path to a checkpoint directory\n"
+        f"  - A WandB run ID (8 characters)\n"
+        f"  - A WandB run name\n"
+        f"\nMake sure the checkpoint directory contains results.pkl"
+    )
+
+
+def load_model_predictions_from_pkl(
+    checkpoint_path: str,
+    model_name: str = "model",
+    use_test_results: bool = True
+) -> pd.DataFrame:
+    """Load fine-tuned model predictions from results.pkl file.
+
+    Args:
+        checkpoint_path: Path to the checkpoint directory containing results.pkl
+        model_name: Name to use for this model in column names (e.g., "weak", "strong")
+        use_test_results: If True, load 'test_results'; if False, load 'inference_results'
 
     Returns:
         DataFrame with columns: idx, txt, {model_name}_soft_label, {model_name}_hard_label, ground_truth
+
+    Raises:
+        FileNotFoundError: If checkpoint_path or results.pkl doesn't exist
+        KeyError: If required keys are missing from results.pkl
+        ValueError: If results data is empty or malformed
     """
-    ds = load_from_disk(labels_path)
+    # Validate checkpoint path
+    checkpoint_path = Path(checkpoint_path)
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(f"Checkpoint directory not found: {checkpoint_path}")
+
+    # Construct results.pkl path
+    results_pkl_path = checkpoint_path / "results.pkl"
+    if not results_pkl_path.exists():
+        raise FileNotFoundError(
+            f"results.pkl not found at: {results_pkl_path}\n"
+            f"Make sure the model was trained and evaluated with save_path set."
+        )
+
+    # Load pickle file
+    print(f"Loading predictions from {results_pkl_path}...")
+    with open(results_pkl_path, "rb") as f:
+        results_data = pickle.load(f)
+
+    # Select dataset (test_results or inference_results)
+    dataset_key = "test_results" if use_test_results else "inference_results"
+    if dataset_key not in results_data:
+        raise KeyError(
+            f"'{dataset_key}' not found in results.pkl. "
+            f"Available keys: {list(results_data.keys())}"
+        )
+
+    predictions_ds = results_data[dataset_key]
+
+    if predictions_ds is None or len(predictions_ds) == 0:
+        raise ValueError(f"No predictions found in '{dataset_key}'")
+
+    print(f"Loaded {len(predictions_ds)} predictions from {dataset_key}")
 
     # Convert to DataFrame
     records = []
-    for i, example in enumerate(ds):
+    for i, example in enumerate(predictions_ds):
         soft_label = example.get('soft_label')
-        # If soft_label is a list (e.g., [0.3, 0.7]), extract probability of positive class
+        # soft_label is a list [prob_class_0, prob_class_1]
+        # Extract probability of class 1
         if isinstance(soft_label, list):
-            soft_label = soft_label[1]  # Probability of class 1
+            soft_label = soft_label[1]
 
         records.append({
             'idx': i,
             'txt': example.get('txt', ''),
             f'{model_name}_soft_label': float(soft_label),
             f'{model_name}_hard_label': example.get('hard_label'),
-            'ground_truth': example.get('gt_label'),  # Ground truth label
-        })
-
-    return pd.DataFrame(records)
-
-
-def generate_base_model_predictions(
-    weak_labels_ds,
-    model_size: str,
-    model_name: str = "strong",
-    batch_size: int = 32,
-    max_ctx: int = 1024
-) -> pd.DataFrame:
-    """Generate predictions from a base LM using Yes/No token logits.
-
-    Args:
-        weak_labels_ds: The weak_labels dataset (loaded from disk)
-        model_size: Model size (e.g., "gpt2-xl", "gpt2-large")
-        model_name: Name to use for this model in column names
-        batch_size: Batch size for inference
-        max_ctx: Maximum context length
-
-    Returns:
-        DataFrame with columns: idx, txt, {model_name}_soft_label, {model_name}_hard_label
-    """
-    print(f"Loading base language model: {model_size}")
-
-    # Get tokenizer
-    tokenizer = get_tokenizer(model_size)
-
-    # Get token IDs for "Yes" and "No"
-    yes_token_id = tokenizer.encode(" Yes", add_special_tokens=False)[0]
-    no_token_id = tokenizer.encode(" No", add_special_tokens=False)[0]
-    print(f"Yes token ID: {yes_token_id}, No token ID: {no_token_id}")
-
-    # Tokenize the dataset if not already tokenized
-    if 'input_ids' not in weak_labels_ds.column_names:
-        print("Tokenizing dataset...")
-        weak_labels_ds = tokenize_dataset(weak_labels_ds, tokenizer, max_ctx)
-
-    # Load base language model
-    print(f"Initializing {model_size} language model...")
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = AutoModelForCausalLM.from_pretrained(model_size).to(device)
-    model.eval()
-
-    print(f"Running inference on {len(weak_labels_ds)} examples...")
-
-    # Get predictions using Yes/No token logits
-    results = []
-    with torch.no_grad():
-        for batch in to_batch(weak_labels_ds, batch_size):
-            # Pad input_ids to common length
-            input_ids = torch.nn.utils.rnn.pad_sequence(
-                [torch.tensor(ex) for ex in batch["input_ids"]], batch_first=True
-            ).to(device)
-
-            # Get language model logits
-            outputs = model(input_ids)
-            logits = outputs.logits
-
-            # Get logits at the last token position for each example
-            input_lens = (input_ids != 0).sum(dim=-1)
-            last_token_logits = torch.stack([
-                logits[i, input_lens[i] - 1, :] for i in range(len(input_lens))
-            ])
-
-            # Extract Yes/No logits
-            yes_logits = last_token_logits[:, yes_token_id].cpu().numpy()
-            no_logits = last_token_logits[:, no_token_id].cpu().numpy()
-
-            # Compute probabilities using softmax over Yes/No
-            logit_pairs = np.stack([no_logits, yes_logits], axis=1)
-            probs = np.exp(logit_pairs) / np.exp(logit_pairs).sum(axis=1, keepdims=True)
-
-            # Get predictions
-            preds = np.argmax(probs, axis=1)
-
-            results.extend([
-                {
-                    'txt': txt,
-                    'soft_label': prob[1],  # Probability of "Yes" (class 1)
-                    'hard_label': int(pred),
-                }
-                for txt, prob, pred in zip(batch["txt"], probs, preds)
-            ])
-
-    # Calculate accuracy
-    accs = [r['soft_label'] > 0.5 for r in results]
-    mean_acc = np.mean(accs)
-    print(f"[{model_name} (base LM)] Accuracy (using Yes/No logits): {mean_acc:.3f} (n={len(results)})")
-
-    # Convert to DataFrame
-    records = []
-    for i, result in enumerate(results):
-        records.append({
-            'idx': i,
-            'txt': result['txt'],
-            f'{model_name}_soft_label': float(result['soft_label']),
-            f'{model_name}_hard_label': result['hard_label'],
+            'ground_truth': example.get('gt_label'),
         })
 
     return pd.DataFrame(records)
 
 
 def find_agreement_disagreement(
-    weak_labels_path: str,
-    strong_model_size: str,
+    weak_checkpoint_path: str,
+    strong_checkpoint_path: str,
     weak_name: str = "weak",
     strong_name: str = "strong",
-    batch_size: int = 32,
-    max_ctx: int = 1024
+    use_test_results: bool = True,
+    validate_alignment: bool = True
 ) -> Dict[str, pd.DataFrame]:
-    """Find where fine-tuned weak model and base strong model agree/disagree.
+    """Find where two fine-tuned models agree/disagree on predictions.
 
     Args:
-        weak_labels_path: Path to weak model's weak_labels directory
-        strong_model_size: Strong model size (e.g., "gpt2-xl")
-        weak_name: Name for weak model
-        strong_name: Name for strong model
-        batch_size: Batch size for strong model inference
-        max_ctx: Max context length
+        weak_checkpoint_path: Path to weak model checkpoint directory
+        strong_checkpoint_path: Path to strong model checkpoint directory
+        weak_name: Name for weak model (used in column names)
+        strong_name: Name for strong model (used in column names)
+        use_test_results: If True, use test_results; if False, use inference_results
+        validate_alignment: If True, validate that both models used same test examples
 
     Returns:
         Dictionary with keys 'all', 'agree', 'disagree'
+
+    Raises:
+        ValueError: If datasets have different lengths or mismatched examples
     """
-    # Load weak_labels dataset from disk
-    print("Loading weak_labels dataset...")
-    weak_labels_ds = load_from_disk(weak_labels_path)
-    print(f"Loaded {len(weak_labels_ds)} examples")
+    dataset_type = "test set" if use_test_results else "inference set (train2)"
+    print(f"\n=== Comparing {weak_name} vs {strong_name} on {dataset_type} ===\n")
 
-    # Convert weak labels to DataFrame
-    print("Extracting weak model predictions...")
-    weak_df = load_weak_model_predictions(weak_labels_path, weak_name)
-
-    # Generate base strong model predictions on the SAME examples
-    print(f"\nGenerating base {strong_model_size} predictions on the same examples...")
-    strong_df = generate_base_model_predictions(
-        weak_labels_ds=weak_labels_ds,
-        model_size=strong_model_size,
-        model_name=strong_name,
-        batch_size=batch_size,
-        max_ctx=max_ctx
+    # Load weak model predictions
+    print(f"Loading {weak_name} model predictions...")
+    weak_df = load_model_predictions_from_pkl(
+        weak_checkpoint_path,
+        model_name=weak_name,
+        use_test_results=use_test_results
     )
 
-    # Merge on idx (no need to merge on txt since they're guaranteed to be the same)
+    # Load strong model predictions
+    print(f"Loading {strong_name} model predictions...")
+    strong_df = load_model_predictions_from_pkl(
+        strong_checkpoint_path,
+        model_name=strong_name,
+        use_test_results=use_test_results
+    )
+
+    # Validate alignment
+    if validate_alignment:
+        print("\nValidating dataset alignment...")
+        if len(weak_df) != len(strong_df):
+            raise ValueError(
+                f"Dataset length mismatch: {weak_name}={len(weak_df)}, {strong_name}={len(strong_df)}\n"
+                f"Both models must be evaluated on the same test set."
+            )
+
+        # Check if texts match for first 10 examples
+        n_check = min(10, len(weak_df))
+        for i in range(n_check):
+            if weak_df.iloc[i]['txt'] != strong_df.iloc[i]['txt']:
+                raise ValueError(
+                    f"Text mismatch at index {i}. Models may have been evaluated on different datasets.\n"
+                    f"Weak: {weak_df.iloc[i]['txt'][:50]}...\n"
+                    f"Strong: {strong_df.iloc[i]['txt'][:50]}..."
+                )
+        print(f"  ✓ Validated alignment (checked {n_check} examples)")
+
+    # Merge on idx
     merged_df = pd.merge(weak_df, strong_df, on='idx', how='inner', suffixes=('_weak', '_strong'))
 
-    # Keep only one txt column
+    # Keep only one txt and ground_truth column
     if 'txt_weak' in merged_df.columns:
         merged_df['txt'] = merged_df['txt_weak']
         merged_df = merged_df.drop(columns=['txt_weak', 'txt_strong'])
 
-    if len(merged_df) == 0:
-        raise ValueError("No matching examples found. This should not happen!")
+    if 'ground_truth_weak' in merged_df.columns:
+        # Verify ground truth matches
+        if validate_alignment and not (merged_df['ground_truth_weak'] == merged_df['ground_truth_strong']).all():
+            raise ValueError("Ground truth labels don't match between models!")
+        merged_df['ground_truth'] = merged_df['ground_truth_weak']
+        merged_df = merged_df.drop(columns=['ground_truth_weak', 'ground_truth_strong'])
 
     # Find agreement/disagreement
     merged_df['agree'] = (
@@ -284,101 +340,156 @@ def print_examples(df: pd.DataFrame, n: int, title: str, model1_name: str, model
         print(f"  Confidence diff: {row['confidence_diff']:.4f}")
 
 
-def main():
-    # ========================================================================
-    # CONFIGURATION
-    # ========================================================================
+def main(
+    weak_checkpoint_path: Optional[str] = None,
+    strong_checkpoint_path: Optional[str] = None,
+    weak_name: str = "weak",
+    strong_name: str = "strong",
+    use_test_results: bool = True,
+    output_dir: Optional[str] = None,
+    show_examples: bool = True,
+    n_examples: int = 5
+):
+    """Compare predictions from two fine-tuned models.
 
-    # Path to fine-tuned weak model's predictions
-    # Example format: ./results/default/{config}/weak_labels
-    # where {config} is like: bs=32-dn=boolq-...-ms=gpt2-...-mxr=1.0-...
-    WEAK_LABELS_PATH = None  # SET THIS to weak model's weak_labels path
-
-    # Model names (for display purposes)
-    WEAK_NAME = "gpt2"
-    STRONG_NAME = "gpt2-xl"
-
-    # Inference settings
-    BATCH_SIZE = 32
-    MAX_CTX = 1024
-
-    # Output options
-    OUTPUT_DIR = os.path.join("agreement_analysis", f"{WEAK_NAME}_vs_{STRONG_NAME}")
-    SHOW_EXAMPLES = True  # Print example texts
-    N_EXAMPLES = 5  # Number of examples to show
-
+    Args:
+        weak_checkpoint_path: Path to weak model checkpoint directory (required)
+                             Can be: full path, WandB run ID, or WandB run name
+        strong_checkpoint_path: Path to strong model checkpoint directory (required)
+                               Can be: full path, WandB run ID, or WandB run name
+        weak_name: Display name for weak model (default: "weak")
+        strong_name: Display name for strong model (default: "strong")
+        use_test_results: Use test_results (True) or inference_results (False)
+        output_dir: Output directory for CSVs (default: ./agreement_analysis/{weak_name}_vs_{strong_name})
+        show_examples: Whether to print example agreements/disagreements
+        n_examples: Number of examples to show
+    """
     # ========================================================================
     # VALIDATION
     # ========================================================================
 
-    if WEAK_LABELS_PATH is None:
-        print("ERROR: WEAK_LABELS_PATH is not set!")
+    if weak_checkpoint_path is None or strong_checkpoint_path is None:
+        print("ERROR: Both weak_checkpoint_path and strong_checkpoint_path must be provided!")
         print()
-        print("Please set WEAK_LABELS_PATH to point to a weak_labels directory.")
-        print("Example:")
-        print("  WEAK_LABELS_PATH = './results/default/bs=32-dn=boolq-...-ms=gpt2-.../weak_labels'")
+        print("Usage:")
+        print("  python find_agreement.py \\")
+        print("    --weak_checkpoint_path='./path/to/weak/checkpoint' \\")
+        print("    --strong_checkpoint_path='./path/to/strong/checkpoint'")
         print()
-        print("You can find weak_labels directories by running:")
-        print("  find ./results -name 'weak_labels' -type d")
+        print("You can also use WandB run IDs or names:")
+        print("  python find_agreement.py \\")
+        print("    --weak_checkpoint_path='cr50yyzj' \\")
+        print("    --strong_checkpoint_path='znx4qjgf'")
+        print()
+        print("Optional arguments:")
+        print("  --weak_name='gpt2'              # Display name for weak model")
+        print("  --strong_name='gpt2-xl'         # Display name for strong model")
+        print("  --use_test_results=True         # Use test_results (True) or inference_results (False)")
+        print("  --output_dir='./output'         # Custom output directory")
+        print("  --show_examples=True            # Show example predictions")
+        print("  --n_examples=5                  # Number of examples to show")
         return
+
+    # Set default output directory
+    if output_dir is None:
+        output_dir = os.path.join("agreement_analysis", f"{weak_name}_vs_{strong_name}")
 
     # ========================================================================
     # ANALYSIS
     # ========================================================================
 
+    dataset_type = "test set" if use_test_results else "inference set (train2)"
+
     print("="*80)
-    print("Fine-tuned Weak Model vs Base Strong Model Agreement Analysis")
+    print(f"Fine-tuned Model Comparison: {weak_name} vs {strong_name}")
     print("="*80)
-    print(f"Fine-tuned weak model labels: {WEAK_LABELS_PATH}")
-    print(f"Base strong model: {STRONG_NAME}")
+    print(f"Weak model checkpoint:   {weak_checkpoint_path}")
+    print(f"Strong model checkpoint: {strong_checkpoint_path}")
+    print(f"Dataset:                 {dataset_type}")
     print("="*80)
     print()
 
-    # Find agreement/disagreement
-    results = find_agreement_disagreement(
-        weak_labels_path=WEAK_LABELS_PATH,
-        strong_model_size=STRONG_NAME,
-        weak_name=WEAK_NAME,
-        strong_name=STRONG_NAME,
-        batch_size=BATCH_SIZE,
-        max_ctx=MAX_CTX
-    )
+    try:
+        # Resolve checkpoint paths (handles WandB run IDs/names)
+        weak_checkpoint_path = resolve_checkpoint_path(weak_checkpoint_path)
+        strong_checkpoint_path = resolve_checkpoint_path(strong_checkpoint_path)
 
-    # Print summary
-    print_summary(results, WEAK_NAME, STRONG_NAME)
+        print(f"\nResolved paths:")
+        print(f"  Weak:   {weak_checkpoint_path}")
+        print(f"  Strong: {strong_checkpoint_path}")
 
-    # Show examples
-    if SHOW_EXAMPLES:
-        print_examples(results['agree'], n=N_EXAMPLES, title="Examples where models AGREE",
-                      model1_name=WEAK_NAME, model2_name=STRONG_NAME)
-        print_examples(results['disagree'], n=N_EXAMPLES, title="Examples where models DISAGREE",
-                      model1_name=WEAK_NAME, model2_name=STRONG_NAME)
+        # Find agreement/disagreement
+        results = find_agreement_disagreement(
+            weak_checkpoint_path=weak_checkpoint_path,
+            strong_checkpoint_path=strong_checkpoint_path,
+            weak_name=weak_name,
+            strong_name=strong_name,
+            use_test_results=use_test_results,
+            validate_alignment=True
+        )
 
-    # Export to CSV
-    print()
-    print("="*80)
-    print("Exporting to CSV...")
-    print("="*80)
+        # Print summary
+        print_summary(results, weak_name, strong_name)
 
-    Path(OUTPUT_DIR).mkdir(exist_ok=True, parents=True)
+        # Show examples
+        if show_examples:
+            print_examples(results['agree'], n=n_examples, title="Examples where models AGREE",
+                          model1_name=weak_name, model2_name=strong_name)
+            print_examples(results['disagree'], n=n_examples, title="Examples where models DISAGREE",
+                          model1_name=weak_name, model2_name=strong_name)
 
-    # Save each category
-    for category, df in results.items():
-        if category == 'all':
-            continue
-        output_path = f"{OUTPUT_DIR}/{category}.csv"
-        df.to_csv(output_path, index=False)
-        print(f"  {category}: {output_path} ({len(df)} examples)")
+        # Export to CSV
+        print()
+        print("="*80)
+        print("Exporting to CSV...")
+        print("="*80)
 
-    # Save full dataset with agreement labels
-    full_output = f"{OUTPUT_DIR}/all_with_labels.csv"
-    results['all'].to_csv(full_output, index=False)
-    print(f"  all: {full_output} ({len(results['all'])} examples)")
+        Path(output_dir).mkdir(exist_ok=True, parents=True)
 
-    print("="*80)
+        # Save metadata
+        metadata = {
+            "weak_checkpoint_path": str(weak_checkpoint_path),
+            "strong_checkpoint_path": str(strong_checkpoint_path),
+            "weak_name": weak_name,
+            "strong_name": strong_name,
+            "dataset_type": dataset_type,
+            "use_test_results": use_test_results,
+            "total_examples": len(results['all']),
+            "agree_count": len(results['agree']),
+            "disagree_count": len(results['disagree']),
+        }
 
-    print("\nDone!")
+        metadata_path = os.path.join(output_dir, "metadata.json")
+        with open(metadata_path, "w") as f:
+            json.dump(metadata, f, indent=2)
+        print(f"  metadata: {metadata_path}")
+
+        # Save each category
+        for category, df in results.items():
+            if category == 'all':
+                continue
+            output_path = f"{output_dir}/{category}.csv"
+            df.to_csv(output_path, index=False)
+            print(f"  {category}: {output_path} ({len(df)} examples)")
+
+        # Save full dataset with agreement labels
+        full_output = f"{output_dir}/all_with_labels.csv"
+        results['all'].to_csv(full_output, index=False)
+        print(f"  all: {full_output} ({len(results['all'])} examples)")
+
+        print("="*80)
+        print("\nDone!")
+
+    except (FileNotFoundError, KeyError, ValueError) as e:
+        print(f"\nERROR: {e}")
+        print("\nTroubleshooting:")
+        print("  1. Verify checkpoint paths exist")
+        print("  2. Ensure results.pkl exists in each checkpoint directory")
+        print("  3. Check that both models were trained on the same dataset")
+        print("  4. If using WandB run ID/name, check it exists in the project")
+        return
 
 
 if __name__ == '__main__':
-    main()
+    import fire
+    fire.Fire(main)
