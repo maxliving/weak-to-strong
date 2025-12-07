@@ -172,7 +172,17 @@ def generate_model_predictions(
             n_test_docs = config.get("n_test_docs", n_test_docs)
             batch_size = config.get("batch_size", batch_size)
             max_ctx = config.get("max_ctx", max_ctx)
-            model_size = config.get("model_size", "gpt2")
+            if "model_size" in config:
+                model_size = config["model_size"]
+            else:
+                # Check parent directory for config (common when using checkpoint subdirs)
+                parent_config_path = checkpoint_path.parent / "config.json"
+                if parent_config_path.exists():
+                    with open(parent_config_path, "r") as pf:
+                        parent_config = json.load(pf)
+                        model_size = parent_config.get("model_size", "gpt2")
+                else:
+                    model_size = "gpt2"
             print(f"Loaded config: dataset={dataset_name}, model={model_size}, n_test_docs={n_test_docs}")
 
     # Determine model checkpoint directory
