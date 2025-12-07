@@ -322,7 +322,7 @@ def main():
     print("Exporting to CSV...")
     print("="*80)
 
-    Path(OUTPUT_DIR).mkdir(exist_ok=True)
+    Path(OUTPUT_DIR).mkdir(exist_ok=True, parents=True)
 
     # Save each category
     for category, df in results.items():
