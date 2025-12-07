@@ -452,7 +452,7 @@ def main():
     DRY_RUN = False
 
     # Parallel execution (set to 2 for dual parallel runs on 8 GPUs)
-    PARALLEL_WORKERS = 2
+    PARALLEL_WORKERS = 1
 
     # Log file configuration
     now = datetime.now()
