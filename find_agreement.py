@@ -18,9 +18,11 @@ from datasets import load_from_disk
 
 from weak_to_strong.common import get_tokenizer
 from weak_to_strong.datasets import tokenize_dataset
-from weak_to_strong.eval import eval_model_acc
+from weak_to_strong.eval import eval_model_acc, to_batch
 from weak_to_strong.model import TransformerWithHead
 from weak_to_strong.train import ModelConfig
+from transformers import AutoModelForCausalLM
+import numpy as np
 
 
 def load_weak_model_predictions(labels_path: str, model_name: str = "weak") -> pd.DataFrame:
@@ -61,7 +63,7 @@ def generate_base_model_predictions(
     batch_size: int = 32,
     max_ctx: int = 1024
 ) -> pd.DataFrame:
-    """Generate predictions from a base (untrained) model on the same examples as weak_labels.
+    """Generate predictions from a base LM using Yes/No token logits.
 
     Args:
         weak_labels_ds: The weak_labels dataset (loaded from disk)
@@ -73,44 +75,80 @@ def generate_base_model_predictions(
     Returns:
         DataFrame with columns: idx, txt, {model_name}_soft_label, {model_name}_hard_label
     """
-    print(f"Loading base model: {model_size}")
+    print(f"Loading base language model: {model_size}")
 
     # Get tokenizer
     tokenizer = get_tokenizer(model_size)
+
+    # Get token IDs for "Yes" and "No"
+    yes_token_id = tokenizer.encode(" Yes", add_special_tokens=False)[0]
+    no_token_id = tokenizer.encode(" No", add_special_tokens=False)[0]
+    print(f"Yes token ID: {yes_token_id}, No token ID: {no_token_id}")
 
     # Tokenize the dataset if not already tokenized
     if 'input_ids' not in weak_labels_ds.column_names:
         print("Tokenizing dataset...")
         weak_labels_ds = tokenize_dataset(weak_labels_ds, tokenizer, max_ctx)
 
-    # Determine number of classes from the weak_labels dataset
-    num_labels = len(weak_labels_ds[0]['soft_label']) if 'soft_label' in weak_labels_ds[0] else 2
-
-    # Load base model (no fine-tuning)
-    print(f"Initializing {model_size} model...")
-    if torch.cuda.is_available():
-        model = TransformerWithHead.from_pretrained(
-            model_size,
-            num_labels=num_labels,
-        ).to("cuda")
-    else:
-        model = TransformerWithHead.from_pretrained(
-            model_size,
-            num_labels=num_labels,
-        )
+    # Load base language model
+    print(f"Initializing {model_size} language model...")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = AutoModelForCausalLM.from_pretrained(model_size).to(device)
+    model.eval()
 
     print(f"Running inference on {len(weak_labels_ds)} examples...")
 
-    # Get predictions using eval_model_acc
-    results_ds = eval_model_acc(model, weak_labels_ds, batch_size, dataset_name=f"{model_name} (base)")
+    # Get predictions using Yes/No token logits
+    results = []
+    with torch.no_grad():
+        for batch in to_batch(weak_labels_ds, batch_size):
+            # Pad input_ids to common length
+            input_ids = torch.nn.utils.rnn.pad_sequence(
+                [torch.tensor(ex) for ex in batch["input_ids"]], batch_first=True
+            ).to(device)
+
+            # Get language model logits
+            outputs = model(input_ids)
+            logits = outputs.logits
+
+            # Get logits at the last token position for each example
+            input_lens = (input_ids != 0).sum(dim=-1)
+            last_token_logits = torch.stack([
+                logits[i, input_lens[i] - 1, :] for i in range(len(input_lens))
+            ])
+
+            # Extract Yes/No logits
+            yes_logits = last_token_logits[:, yes_token_id].cpu().numpy()
+            no_logits = last_token_logits[:, no_token_id].cpu().numpy()
+
+            # Compute probabilities using softmax over Yes/No
+            logit_pairs = np.stack([no_logits, yes_logits], axis=1)
+            probs = np.exp(logit_pairs) / np.exp(logit_pairs).sum(axis=1, keepdims=True)
+
+            # Get predictions
+            preds = np.argmax(probs, axis=1)
+
+            results.extend([
+                {
+                    'txt': txt,
+                    'soft_label': prob[1],  # Probability of "Yes" (class 1)
+                    'hard_label': int(pred),
+                }
+                for txt, prob, pred in zip(batch["txt"], probs, preds)
+            ])
+
+    # Calculate accuracy
+    accs = [r['soft_label'] > 0.5 for r in results]
+    mean_acc = np.mean(accs)
+    print(f"[{model_name} (base LM)] Accuracy (using Yes/No logits): {mean_acc:.3f} (n={len(results)})")
 
     # Convert to DataFrame
     records = []
-    for i, result in enumerate(results_ds):
+    for i, result in enumerate(results):
         records.append({
             'idx': i,
             'txt': result['txt'],
-            f'{model_name}_soft_label': result['soft_label'][1] if num_labels == 2 else max(result['soft_label']),
+            f'{model_name}_soft_label': float(result['soft_label']),
             f'{model_name}_hard_label': result['hard_label'],
         })
 
