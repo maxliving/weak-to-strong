@@ -9,9 +9,29 @@ with easy-to-understand configuration and progress tracking.
 import subprocess
 import sys
 import os
+import argparse
 from dataclasses import dataclass
 from typing import List, Optional, Set, Tuple
 from datetime import datetime
+
+
+class TeeLogger:
+    """Write to both stdout and a log file."""
+    def __init__(self, log_file):
+        self.terminal = sys.stdout
+        self.log = open(log_file, 'w')
+
+    def write(self, message):
+        self.terminal.write(message)
+        self.log.write(message)
+        self.log.flush()  # Ensure immediate write
+
+    def flush(self):
+        self.terminal.flush()
+        self.log.flush()
+
+    def close(self):
+        self.log.close()
 
 try:
     import wandb
@@ -54,16 +74,18 @@ class SweepRunner:
     """Manages and executes experiment sweeps."""
 
     def __init__(self,
-                 n_docs: int = 20000,
-                 n_test_docs: int = 10000,
-                 eval_every: int = 200,
-                 results_folder: str = "/tmp/results",
+                 n_docs: int,
+                 n_test_docs: int,
+                 eval_every: int,
+                 epochs: int,
+                 results_folder: str,
                  dry_run: bool = False,
                  wandb_entity: Optional[str] = None,
                  wandb_project: str = "weak-to-strong-mixing"):
         self.n_docs = n_docs
         self.n_test_docs = n_test_docs
         self.eval_every = eval_every
+        self.epochs = epochs
         self.results_folder = results_folder
         self.dry_run = dry_run
         self.wandb_entity = wandb_entity
@@ -162,6 +184,7 @@ class SweepRunner:
             f"--n_docs={self.n_docs}",
             f"--n_test_docs={self.n_test_docs}",
             f"--eval_every={self.eval_every}",
+            f"--epochs={self.epochs}",
             f"--results_folder={self.results_folder}",
         ]
 
@@ -338,6 +361,7 @@ def main():
     N_DOCS = 20000
     N_TEST_DOCS = 10000
     EVAL_EVERY = 200
+    EPOCHS = 4  # Change this to run more/fewer epochs
     RESULTS_FOLDER = "/tmp/results"
 
     # W&B configuration (for automatic skip of completed runs)
@@ -346,6 +370,22 @@ def main():
 
     # Dry run mode (set to True to preview without executing)
     DRY_RUN = False
+
+    # Log file configuration
+	now = datetime.now()
+    LOG_FILE = f"sweep_log_{now.strftime('%Y-%m-%d-%H%M%S').txt"
+
+    # ========================================================================
+    # SETUP LOGGING
+    # ========================================================================
+
+    # Set up logging to both stdout and file
+    log_path = os.path.join(os.getcwd(), LOG_FILE)
+    tee = TeeLogger(log_path)
+    sys.stdout = tee
+    sys.stderr = tee
+
+    print(f"\n[Logging to: {log_path}]")
 
     # ========================================================================
     # GENERATE EXPERIMENTS
@@ -401,6 +441,7 @@ def main():
         n_docs=N_DOCS,
         n_test_docs=N_TEST_DOCS,
         eval_every=EVAL_EVERY,
+        epochs=EPOCHS,
         results_folder=RESULTS_FOLDER,
         dry_run=DRY_RUN,
         wandb_entity=WANDB_ENTITY,
@@ -418,6 +459,10 @@ def main():
         print("\n\nSweep interrupted by user")
     finally:
         runner.print_summary(len(all_experiments))
+        # Close log file
+        tee.close()
+        sys.stdout = tee.terminal
+        sys.stderr = tee.terminal
 
 
 if __name__ == "__main__":
