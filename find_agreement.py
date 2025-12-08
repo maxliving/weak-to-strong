@@ -30,6 +30,7 @@ from weak_to_strong.datasets import load_dataset, tokenize_dataset
 from weak_to_strong.model import TransformerWithHead
 from weak_to_strong.eval import eval_model_acc
 from weak_to_strong.common import get_tokenizer
+from train_simple import get_config_foldername
 
 
 def resolve_checkpoint_path(
@@ -70,50 +71,64 @@ def resolve_checkpoint_path(
     # Try to resolve as WandB run
     try:
         api = wandb.Api(timeout=60)
+        run = None
 
         # Try as run ID (8 chars alphanumeric)
         if len(identifier) == 8 and identifier.isalnum():
             try:
                 run = api.run(f"{wandb_entity}/{wandb_project}/{identifier}")
-                run_name = run.name
-                print(f"Resolved WandB run ID '{identifier}' to run: {run_name}")
+                print(f"Resolved WandB run ID '{identifier}' to run: {run.name}")
             except Exception as e:
                 print(f"Could not find run ID '{identifier}': {e}")
-                run_name = None
         else:
             # Try as run name
             runs = list(api.runs(f"{wandb_entity}/{wandb_project}", per_page=500))
             matching_runs = [r for r in runs if r.name == identifier]
             if matching_runs:
-                run_name = matching_runs[0].name
-                print(f"Found WandB run: {run_name}")
-            else:
-                run_name = None
+                run = matching_runs[0]
+                print(f"Found WandB run: {run.name}")
 
-        if run_name:
-            # Construct checkpoint path
-            # Strip the `default_` prefix from the run name if present
-            if run_name.startswith("default_"):
-                run_name = run_name[len("default_"):]
+        if run:
+            # Get config from wandb and reconstruct config_name
+            config = run.config
 
-            # Strip the date/time suffix from the run name
-            # Example: bs=32-dn=boolq-..._2025-12-07_06-16-54 -> bs=32-dn=boolq-...
-            # Pattern: _YYYY-MM-DD_HH-MM-SS
-            run_name = re.sub(r'_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}$', '', run_name)
+            # Extract sweep_subfolder (default: "default")
+            sweep_subfolder = config.get('sweep_subfolder', 'default')
 
-            # Try with "default" subfolder first (most common)
-            checkpoint_path = Path(results_base_dir) / "default" / run_name
+            # Build config dict for get_config_foldername (same as train_simple.py)
+            # Remove any keys that shouldn't be in the folder name (see train_simple.py lines 226-234)
+            config_for_folder = {k: v for k, v in config.items() if k not in [
+                'force_retrain', 'minibatch_size_per_device', 'results_folder', 'sweep_subfolder'
+            ]}
+
+            # Handle weak_model nested config if present
+            if 'weak_model' in config_for_folder and isinstance(config_for_folder['weak_model'], dict):
+                # Remove weak_model dict from config_for_folder
+                del config_for_folder['weak_model']
+
+            # Reconstruct config_name using get_config_foldername
+            config_name = get_config_foldername(config_for_folder)
+            print(f"Reconstructed config_name: {config_name}")
+
+            # Try with sweep subfolder first (most common)
+            checkpoint_path = Path(results_base_dir) / sweep_subfolder / config_name
+            if checkpoint_path.exists() and (checkpoint_path / "config.json").exists():
+                return str(checkpoint_path.absolute())
+
+            # Try with "default" subfolder as fallback
+            checkpoint_path = Path(results_base_dir) / "default" / config_name
             if checkpoint_path.exists() and (checkpoint_path / "config.json").exists():
                 return str(checkpoint_path.absolute())
 
             # Try without subfolder
-            checkpoint_path = Path(results_base_dir) / run_name
+            checkpoint_path = Path(results_base_dir) / config_name
             if checkpoint_path.exists() and (checkpoint_path / "config.json").exists():
                 return str(checkpoint_path.absolute())
 
             raise ValueError(
-                f"Found WandB run '{run_name}' but couldn't find checkpoint directory with model.\n"
-                f"Tried:\n  - {results_base_dir}/default/{run_name}\n  - {results_base_dir}/{run_name}\n"
+                f"Found WandB run '{run.name}' but couldn't find checkpoint directory with model.\n"
+                f"Tried:\n  - {results_base_dir}/{sweep_subfolder}/{config_name}\n"
+                f"  - {results_base_dir}/default/{config_name}\n  - {results_base_dir}/{config_name}\n"
                 f"Make sure the checkpoint was saved locally with config.json"
             )
 
