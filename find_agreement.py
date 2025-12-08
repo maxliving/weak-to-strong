@@ -21,6 +21,7 @@ import re
 from pathlib import Path
 from typing import Dict, Optional
 
+import numpy as np
 import pandas as pd
 import wandb
 import torch
@@ -452,9 +453,96 @@ def print_summary(results: Dict[str, pd.DataFrame], model1_name: str, model2_nam
     print(f"Disagree: {disagree_count} ({100*disagree_count/total:.1f}%)")
     print(f"Average confidence difference: {avg_confidence_diff:.4f}")
     print()
-    print("ACCURACY VS GROUND TRUTH:")
+    print("OVERALL ACCURACY VS GROUND TRUTH:")
     print(f"  {model1_name}: {model1_correct}/{total} ({model1_acc:.1f}%)")
     print(f"  {model2_name}: {model2_correct}/{total} ({model2_acc:.1f}%)")
+
+    # Breakdown by agreement/disagreement
+    print()
+    print("ACCURACY BREAKDOWN BY AGREEMENT:")
+    print("-" * 80)
+
+    # When models agree
+    agree_df = results['agree']
+    if len(agree_df) > 0:
+        agree_model1_correct = (agree_df[f'{model1_name}_hard_label'] == agree_df['ground_truth']).sum()
+        agree_model2_correct = (agree_df[f'{model2_name}_hard_label'] == agree_df['ground_truth']).sum()
+        agree_model1_acc = 100 * agree_model1_correct / len(agree_df)
+        agree_model2_acc = 100 * agree_model2_correct / len(agree_df)
+
+        print(f"\nWhen models AGREE ({agree_count} examples):")
+        print(f"  {model1_name}: {agree_model1_correct}/{len(agree_df)} ({agree_model1_acc:.1f}%)")
+        print(f"  {model2_name}: {agree_model2_correct}/{len(agree_df)} ({agree_model2_acc:.1f}%)")
+        print(f"  (Note: When models agree, their accuracy is the same)")
+
+    # When models disagree
+    disagree_df = results['disagree']
+    if len(disagree_df) > 0:
+        disagree_model1_correct = (disagree_df[f'{model1_name}_hard_label'] == disagree_df['ground_truth']).sum()
+        disagree_model2_correct = (disagree_df[f'{model2_name}_hard_label'] == disagree_df['ground_truth']).sum()
+        disagree_model1_acc = 100 * disagree_model1_correct / len(disagree_df)
+        disagree_model2_acc = 100 * disagree_model2_correct / len(disagree_df)
+
+        print(f"\nWhen models DISAGREE ({disagree_count} examples):")
+        print(f"  {model1_name}: {disagree_model1_correct}/{len(disagree_df)} ({disagree_model1_acc:.1f}%)")
+        print(f"  {model2_name}: {disagree_model2_correct}/{len(disagree_df)} ({disagree_model2_acc:.1f}%)")
+
+    # Cross-entropy loss breakdown
+    print()
+    print("CROSS-ENTROPY LOSS (using soft predictions):")
+    print("-" * 80)
+
+    def compute_binary_cross_entropy(soft_labels, ground_truth):
+        """Compute binary cross-entropy loss."""
+        # Clip predictions to avoid log(0)
+        soft_labels = np.clip(soft_labels, 1e-7, 1 - 1e-7)
+        # Binary cross-entropy: -[y*log(p) + (1-y)*log(1-p)]
+        return -np.mean(ground_truth * np.log(soft_labels) + (1 - ground_truth) * np.log(1 - soft_labels))
+
+    # Overall cross-entropy
+    model1_ce = compute_binary_cross_entropy(
+        df[f'{model1_name}_soft_label'].values,
+        df['ground_truth'].values
+    )
+    model2_ce = compute_binary_cross_entropy(
+        df[f'{model2_name}_soft_label'].values,
+        df['ground_truth'].values
+    )
+
+    print(f"\nOverall ({total} examples):")
+    print(f"  {model1_name}: {model1_ce:.4f}")
+    print(f"  {model2_name}: {model2_ce:.4f}")
+
+    # Cross-entropy when models agree
+    if len(agree_df) > 0:
+        agree_model1_ce = compute_binary_cross_entropy(
+            agree_df[f'{model1_name}_soft_label'].values,
+            agree_df['ground_truth'].values
+        )
+        agree_model2_ce = compute_binary_cross_entropy(
+            agree_df[f'{model2_name}_soft_label'].values,
+            agree_df['ground_truth'].values
+        )
+
+        print(f"\nWhen models AGREE ({agree_count} examples):")
+        print(f"  {model1_name}: {agree_model1_ce:.4f}")
+        print(f"  {model2_name}: {agree_model2_ce:.4f}")
+
+    # Cross-entropy when models disagree
+    if len(disagree_df) > 0:
+        disagree_model1_ce = compute_binary_cross_entropy(
+            disagree_df[f'{model1_name}_soft_label'].values,
+            disagree_df['ground_truth'].values
+        )
+        disagree_model2_ce = compute_binary_cross_entropy(
+            disagree_df[f'{model2_name}_soft_label'].values,
+            disagree_df['ground_truth'].values
+        )
+
+        print(f"\nWhen models DISAGREE ({disagree_count} examples):")
+        print(f"  {model1_name}: {disagree_model1_ce:.4f}")
+        print(f"  {model2_name}: {disagree_model2_ce:.4f}")
+
     print("="*80)
 
 
