@@ -37,6 +37,10 @@ DISAGREEMENT_FILE = "./agreement_analysis/gpt2--3danjilx_vs_gpt2-large-mr0.0--5q
 RESULTS_FOLDER = "./results"
 SWEEP_SUBFOLDER = "disagreement_experiment"
 
+# Weak labels path from the baseline gpt2 run (Run ID: 3danjilx)
+# This should be the path to the weak_labels directory from the ground truth gpt2 run
+WEAK_LABELS_PATH = "/lambda/nfs/us-south3-fs/weak-to-strong/results/default/bs=32-dn=boolq-e=4-ee=200-lp=0-l=xent-l=5e-05-ls=cosi_anne-mc=1024-md=0.001-mxr=0.0-mxs=sample-ms=gpt2-nd=20000-ntd=10000-o=adam-s=0-twd=0/weak_labels"
+
 # Labeling budgets to test
 LABELING_BUDGETS = [
     590,   # 50% of random baseline (half of 1,179)
@@ -50,7 +54,6 @@ TRAIN_PARAMS = {
     'n_docs': 20000,
     'n_test_docs': 10000,
     'model_size': 'gpt2-large',
-    'weak_model_size': 'gpt2',
     'epochs': 4,
     'eval_every': 100,
     'batch_size': 32,
@@ -81,19 +84,21 @@ def validate_inputs() -> Tuple[bool, List[str]]:
             df = pd.read_csv(DISAGREEMENT_FILE)
             if 'idx' not in df.columns or 'confidence_diff' not in df.columns:
                 errors.append(f"Disagreement file missing required columns (idx, confidence_diff)")
-            if len(df) != 4714:
-                errors.append(f"Disagreement file has {len(df)} entries, expected 4,714")
+            # Note: May have fewer entries if dataset is smaller
         except Exception as e:
             errors.append(f"Error reading disagreement file: {e}")
+
+    # Check weak labels path exists
+    if not Path(WEAK_LABELS_PATH).exists():
+        errors.append(f"Weak labels path not found: {WEAK_LABELS_PATH}")
+        errors.append(f"Please ensure the baseline gpt2 run has completed and generated weak labels")
 
     # Check train_simple.py exists
     if not Path("train_simple.py").exists():
         errors.append("train_simple.py not found in current directory")
 
-    # Validate budgets
+    # Validate budgets (allow any positive budget, dataset size will be checked at runtime)
     for budget in LABELING_BUDGETS:
-        if budget > 4714:
-            errors.append(f"Budget {budget} exceeds dataset size (4,714)")
         if budget <= 0:
             errors.append(f"Budget {budget} must be positive")
 
@@ -138,7 +143,6 @@ def check_existing_runs() -> Dict[int, Optional[str]]:
                 matches = all([
                     config.get('ds_name') == TRAIN_PARAMS['ds_name'],
                     config.get('model_size') == TRAIN_PARAMS['model_size'],
-                    config.get('weak_model_size') == TRAIN_PARAMS['weak_model_size'],
                     config.get('epochs') == TRAIN_PARAMS['epochs'],
                     config.get('seed') == TRAIN_PARAMS['seed'],
                 ])
@@ -179,15 +183,16 @@ def build_train_command(budget: int) -> List[str]:
         f'--n_docs={TRAIN_PARAMS["n_docs"]}',
         f'--n_test_docs={TRAIN_PARAMS["n_test_docs"]}',
         f'--model_size={TRAIN_PARAMS["model_size"]}',
-        f'--weak_model_size={TRAIN_PARAMS["weak_model_size"]}',
         f'--epochs={TRAIN_PARAMS["epochs"]}',
         f'--eval_every={TRAIN_PARAMS["eval_every"]}',
         f'--batch_size={TRAIN_PARAMS["batch_size"]}',
         f'--lr={TRAIN_PARAMS["lr"]}',
         f'--seed={TRAIN_PARAMS["seed"]}',
         f'--mix_strategy={TRAIN_PARAMS["mix_strategy"]}',
+        f'--mix_ratio=0.0',  # For disagreement strategy, set to 0.0 (using labeling_budget instead)
         f'--labeling_budget={budget}',
         f'--disagreement_file={DISAGREEMENT_FILE}',
+        f'--weak_labels_path={WEAK_LABELS_PATH}',  # Explicit path to weak labels from baseline run
         f'--results_folder={RESULTS_FOLDER}',
         f'--sweep_subfolder={SWEEP_SUBFOLDER}',
     ]
