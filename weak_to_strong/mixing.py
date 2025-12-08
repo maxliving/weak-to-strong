@@ -587,9 +587,9 @@ def apply_mixed_supervision(
         print(f"Label-level mixing: Average label entropy = {avg_entropy:.3f}\n")
 
         mixing_stats = {
-            'mixing/avg_label_entropy': avg_entropy,
-            'mixing/min_label_entropy': np.min(entropies),
-            'mixing/max_label_entropy': np.max(entropies),
+            'mixing/avg_label_entropy': float(avg_entropy),
+            'mixing/min_label_entropy': float(np.min(entropies)),
+            'mixing/max_label_entropy': float(np.max(entropies)),
         }
     elif mix_strategy == 'disagreement' and 'label_source' in mixed_ds.column_names:
         # For disagreement-based mixing, compute statistics
@@ -599,9 +599,9 @@ def apply_mixed_supervision(
         # Compute average disagreement rank of selected examples
         if 'disagreement_rank' in mixed_ds.column_names:
             gt_ranks = [x['disagreement_rank'] for x in mixed_ds if x['label_source'] == 'ground_truth']
-            avg_rank = np.mean(gt_ranks) if gt_ranks else 0
-            min_rank = np.min(gt_ranks) if gt_ranks else 0
-            max_rank = np.max(gt_ranks) if gt_ranks else 0
+            avg_rank = float(np.mean(gt_ranks)) if gt_ranks else 0.0
+            min_rank = int(np.min(gt_ranks)) if gt_ranks else 0
+            max_rank = int(np.max(gt_ranks)) if gt_ranks else 0
         else:
             avg_rank = min_rank = max_rank = 0
 
@@ -612,13 +612,13 @@ def apply_mixed_supervision(
         print(f"  Disagreement rank range: [{min_rank}, {max_rank}]\n")
 
         mixing_stats = {
-            'mixing/gt_examples': gt_count,
-            'mixing/weak_examples': weak_count,
-            'mixing/labeling_budget': labeling_budget,
+            'mixing/gt_examples': int(gt_count),
+            'mixing/weak_examples': int(weak_count),
+            'mixing/labeling_budget': int(labeling_budget),
             'mixing/avg_disagreement_rank': avg_rank,
             'mixing/min_disagreement_rank': min_rank,
             'mixing/max_disagreement_rank': max_rank,
-            'mixing/actual_gt_fraction': gt_count / len(mixed_ds),
+            'mixing/actual_gt_fraction': float(gt_count / len(mixed_ds)),
         }
 
     return mixed_ds, mixing_stats
