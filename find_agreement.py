@@ -89,26 +89,33 @@ def resolve_checkpoint_path(
                 print(f"Found WandB run: {run.name}")
 
         if run:
-            # Get config from wandb and reconstruct config_name
+            # Get config from wandb
             config = run.config
 
             # Extract sweep_subfolder (default: "default")
             sweep_subfolder = config.get('sweep_subfolder', 'default')
 
-            # Build config dict for get_config_foldername (same as train_simple.py)
-            # Remove any keys that shouldn't be in the folder name (see train_simple.py lines 226-234)
-            config_for_folder = {k: v for k, v in config.items() if k not in [
-                'force_retrain', 'minibatch_size_per_device', 'results_folder', 'sweep_subfolder'
-            ]}
+            # Use config_name directly from wandb if available (preferred)
+            if 'config_name' in config:
+                config_name = config['config_name']
+                print(f"Using config_name from wandb: {config_name}")
+            else:
+                # Fallback: reconstruct config_name from config
+                # Build config dict for get_config_foldername (same as train_simple.py)
+                # Remove any keys that shouldn't be in the folder name
+                config_for_folder = {k: v for k, v in config.items() if k not in [
+                    'force_retrain', 'minibatch_size_per_device', 'results_folder',
+                    'sweep_subfolder', 'name', 'save_path', 'config_name'
+                ]}
 
-            # Handle weak_model nested config if present
-            if 'weak_model' in config_for_folder and isinstance(config_for_folder['weak_model'], dict):
-                # Remove weak_model dict from config_for_folder
-                del config_for_folder['weak_model']
+                # Handle weak_model nested config if present
+                if 'weak_model' in config_for_folder and isinstance(config_for_folder['weak_model'], dict):
+                    # Remove weak_model dict from config_for_folder
+                    del config_for_folder['weak_model']
 
-            # Reconstruct config_name using get_config_foldername
-            config_name = get_config_foldername(config_for_folder)
-            print(f"Reconstructed config_name: {config_name}")
+                # Reconstruct config_name using get_config_foldername
+                config_name = get_config_foldername(config_for_folder)
+                print(f"Reconstructed config_name: {config_name}")
 
             # Try with sweep subfolder first (most common)
             checkpoint_path = Path(results_base_dir) / sweep_subfolder / config_name
