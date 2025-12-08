@@ -398,9 +398,44 @@ def should_skip_pair(weak_model: str, strong_model: str) -> bool:
 
 def main():
     # ========================================================================
+    # COMMAND LINE ARGUMENTS
+    # ========================================================================
+
+    parser = argparse.ArgumentParser(description='Run weak-to-strong mixing experiments')
+    parser.add_argument('--dry-run', action='store_true',
+                       help='Preview experiments without executing them')
+    parser.add_argument('--no-dry-run', dest='dry_run', action='store_false',
+                       help='Actually run the experiments (default)')
+    parser.set_defaults(dry_run=True)  # Default to dry-run for safety
+    args = parser.parse_args()
+
+    # ========================================================================
     # CONFIGURATION
     # ========================================================================
 
+    # OPTION 1: Explicit configurations (set to None to use automatic generation)
+    # Format: Set of tuples (dataset, strong_model, weak_model, mix_ratio)
+    # Use None for weak_model in ground truth runs (mix_ratio=1.0)
+
+    # UNCOMMENT AND MODIFY THIS BLOCK TO RUN SPECIFIC CONFIGS:
+    EXPLICIT_CONFIGS = {
+        ("boolq", "gpt2-xl", "gpt2", 1.0),
+        ("boolq", "gpt2-xl", "gpt2-medium", 0.0),
+        ("boolq", "gpt2-xl", "gpt2-medium", 0.25),
+        ("boolq", "gpt2-xl", "gpt2-medium", 0.5),
+        ("boolq", "gpt2-xl", "gpt2-medium", 0.75),
+        ("boolq", "gpt2-xl", "gpt2-medium", 1.0),
+        ("boolq", "gpt2-xl", "gpt2-large", 0.0),
+        ("boolq", "gpt2-xl", "gpt2-large", 0.25),
+        ("boolq", "gpt2-xl", "gpt2-large", 0.5),
+        ("boolq", "gpt2-xl", "gpt2-large", 0.75),
+        ("boolq", "gpt2-xl", "gpt2-large", 1.0),
+    }
+
+    # OR set to None to use automatic generation:
+    # EXPLICIT_CONFIGS = None
+
+    # OPTION 2: Automatic generation (used if EXPLICIT_CONFIGS is None)
     # Datasets to sweep
     DATASETS = [
         "sciq",  # Focus on sciq for gpt2-xl missing runs
@@ -447,9 +482,6 @@ def main():
     WANDB_ENTITY = "maxliving-personal"  # Your W&B username
     WANDB_PROJECT = "weak-to-strong-mixing"
 
-    # Dry run mode (set to True to preview without executing)
-    DRY_RUN = False
-
     # Parallel execution (set to 2 for dual parallel runs on 8 GPUs)
     PARALLEL_WORKERS = 1
 
@@ -476,37 +508,57 @@ def main():
     print("="*60)
     print("MIXED SUPERVISION SWEEP")
     print("="*60)
-    print(f"Datasets: {DATASETS}")
-    print(f"Weak models: {WEAK_MODELS}")
-    print(f"Strong models (priority): {STRONG_MODELS_PRIORITY}")
-    print(f"Strong models (last): {STRONG_MODELS_LAST}")
-    print(f"Mix ratios: {MIX_RATIOS}")
-    print(f"Skipping {len(SKIP_CONFIGS)} already-completed configs")
-    print("="*60)
 
-    # Generate experiments for each priority group
-    priority_experiments = generate_experiments(
-        datasets=DATASETS,
-        weak_models=WEAK_MODELS,
-        strong_models=STRONG_MODELS_PRIORITY,
-        mix_ratios=MIX_RATIOS,
-        skip_configs=SKIP_CONFIGS
-    )
+    if EXPLICIT_CONFIGS is not None:
+        # Use explicit configurations
+        print(f"Mode: EXPLICIT CONFIGS ({len(EXPLICIT_CONFIGS)} specified)")
+        print("="*60)
 
-    last_experiments = generate_experiments(
-        datasets=DATASETS,
-        weak_models=WEAK_MODELS,
-        strong_models=STRONG_MODELS_LAST,
-        mix_ratios=MIX_RATIOS,
-        skip_configs=SKIP_CONFIGS
-    )
+        all_experiments = []
+        for dataset, strong_model, weak_model, mix_ratio in EXPLICIT_CONFIGS:
+            config = ExperimentConfig(
+                dataset=dataset,
+                strong_model=strong_model,
+                weak_model=weak_model if mix_ratio < 1.0 else None,
+                mix_ratio=mix_ratio
+            )
+            all_experiments.append(config)
 
-    # Combine: priority first, then large models
-    all_experiments = priority_experiments + last_experiments
+        print(f"\nCreated {len(all_experiments)} experiments from explicit configs")
+    else:
+        # Automatic generation
+        print(f"Mode: AUTOMATIC GENERATION")
+        print(f"Datasets: {DATASETS}")
+        print(f"Weak models: {WEAK_MODELS}")
+        print(f"Strong models (priority): {STRONG_MODELS_PRIORITY}")
+        print(f"Strong models (last): {STRONG_MODELS_LAST}")
+        print(f"Mix ratios: {MIX_RATIOS}")
+        print(f"Skipping {len(SKIP_CONFIGS)} already-completed configs")
+        print("="*60)
 
-    print(f"\nGenerated {len(all_experiments)} experiments:")
-    print(f"  - Priority (gpt2-large): {len(priority_experiments)}")
-    print(f"  - Large (gpt2-xl): {len(last_experiments)}")
+        # Generate experiments for each priority group
+        priority_experiments = generate_experiments(
+            datasets=DATASETS,
+            weak_models=WEAK_MODELS,
+            strong_models=STRONG_MODELS_PRIORITY,
+            mix_ratios=MIX_RATIOS,
+            skip_configs=SKIP_CONFIGS
+        )
+
+        last_experiments = generate_experiments(
+            datasets=DATASETS,
+            weak_models=WEAK_MODELS,
+            strong_models=STRONG_MODELS_LAST,
+            mix_ratios=MIX_RATIOS,
+            skip_configs=SKIP_CONFIGS
+        )
+
+        # Combine: priority first, then large models
+        all_experiments = priority_experiments + last_experiments
+
+        print(f"\nGenerated {len(all_experiments)} experiments:")
+        print(f"  - Priority (gpt2-large): {len(priority_experiments)}")
+        print(f"  - Large (gpt2-xl): {len(last_experiments)}")
 
     # ========================================================================
     # INITIALIZE RUNNER (to load completed runs from W&B)
@@ -518,13 +570,13 @@ def main():
         eval_every=EVAL_EVERY,
         epochs=EPOCHS,
         results_folder=RESULTS_FOLDER,
-        dry_run=DRY_RUN,
+        dry_run=args.dry_run,
         wandb_entity=WANDB_ENTITY,
         wandb_project=WANDB_PROJECT,
         parallel_workers=PARALLEL_WORKERS
     )
 
-    if DRY_RUN:
+    if args.dry_run:
         print("\n⚠ DRY RUN MODE - No experiments will be executed")
         print("\nExperiment status:")
 
