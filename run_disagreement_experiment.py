@@ -22,12 +22,9 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 
-try:
-    import wandb
-    WANDB_AVAILABLE = True
-except ImportError:
-    WANDB_AVAILABLE = False
-    print("Warning: wandb not available, cannot check for existing runs")
+
+import wandb
+WANDB_AVAILABLE = True
 
 
 # ============================================================================

@@ -259,17 +259,11 @@ def main(
             results_folder + "/" + sweep_subfolder + "/" + weak_model_config_name + "/weak_labels"
         )
 
-    # Validate mix_ratio and weak_labels_path compatibility
+    # Validate mix_ratio range
     if mix_ratio < 0.0 or mix_ratio > 1.0:
         raise ValueError(f"mix_ratio must be between 0.0 and 1.0, got {mix_ratio}")
 
-    if mix_ratio == 1.0 and weak_labels_path is not None:
-        raise ValueError(
-            f"mix_ratio=1.0 (pure ground truth) is incompatible with weak_labels_path. "
-            f"Either use mix_ratio<1.0 for mixed supervision, or omit weak_labels_path for ground truth mode."
-        )
-
-    # Validation for mixed supervision
+    # Validation for mixed supervision strategies
     if mix_strategy == 'disagreement':
         # Disagreement strategy validation
         if labeling_budget is None:
@@ -287,12 +281,19 @@ def main(
                 "weak_labels_path required for disagreement strategy. "
                 "You can use --weak_model_size to auto-generate the path."
             )
-    elif mix_ratio < 1.0 and weak_labels_path is None:
-        raise ValueError(
-            f"mix_ratio={mix_ratio} requires weak_labels_path to be provided. "
-            f"To train on ground truth only, use mix_ratio=1.0 (default). "
-            f"You can also use --weak_model_size to auto-generate the path."
-        )
+    else:
+        # Mix ratio-based validation (sample/label strategies)
+        if mix_ratio == 1.0 and weak_labels_path is not None:
+            raise ValueError(
+                f"mix_ratio=1.0 (pure ground truth) is incompatible with weak_labels_path. "
+                f"Either use mix_ratio<1.0 for mixed supervision, or omit weak_labels_path for ground truth mode."
+            )
+        elif mix_ratio < 1.0 and weak_labels_path is None:
+            raise ValueError(
+                f"mix_ratio={mix_ratio} requires weak_labels_path to be provided. "
+                f"To train on ground truth only, use mix_ratio=1.0 (default). "
+                f"You can also use --weak_model_size to auto-generate the path."
+            )
 
     eval_batch_size = model_config.eval_batch_size
     random.seed(seed)
