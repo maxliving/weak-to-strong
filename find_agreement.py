@@ -136,9 +136,12 @@ def generate_model_predictions(
     model_name: str = "model",
     dataset_name: str = "boolq",
     n_test_docs: int = 10000,
+    n_docs: int = 20000,
     batch_size: int = 32,
     max_ctx: int = 1024,
-    use_best_checkpoint: bool = True
+    use_best_checkpoint: bool = True,
+    use_test_results: bool = True,
+    seed: int = 0
 ) -> pd.DataFrame:
     """Generate fresh predictions from a fine-tuned model checkpoint.
 
@@ -147,9 +150,12 @@ def generate_model_predictions(
         model_name: Name to use for this model in column names (e.g., "weak", "strong")
         dataset_name: Name of the dataset (e.g., "boolq")
         n_test_docs: Number of test documents to evaluate
+        n_docs: Number of training documents (used for train2 split)
         batch_size: Batch size for inference
         max_ctx: Maximum context length
         use_best_checkpoint: If True, load from best_checkpoint/; if False, load from root
+        use_test_results: If True, use test set; if False, use train2_ds (held-out train split)
+        seed: Random seed for train/train2 split
 
     Returns:
         DataFrame with columns: idx, txt, {model_name}_soft_label, {model_name}_hard_label, ground_truth
@@ -170,8 +176,10 @@ def generate_model_predictions(
             config = json.load(f)
             dataset_name = config.get("ds_name", dataset_name)
             n_test_docs = config.get("n_test_docs", n_test_docs)
+            n_docs = config.get("n_docs", n_docs)
             batch_size = config.get("batch_size", batch_size)
             max_ctx = config.get("max_ctx", max_ctx)
+            seed = config.get("seed", seed)
             if "model_size" in config:
                 model_size = config["model_size"]
             else:
@@ -183,7 +191,9 @@ def generate_model_predictions(
                         model_size = parent_config.get("model_size", "gpt2")
                 else:
                     model_size = "gpt2"
-            print(f"Loaded config: dataset={dataset_name}, model={model_size}, n_test_docs={n_test_docs}")
+
+            dataset_type = "test" if use_test_results else "train2"
+            print(f"Loaded config: dataset={dataset_name}, model={model_size}, split={dataset_type}, n_docs={n_docs}, n_test_docs={n_test_docs}")
 
     # Determine model checkpoint directory
     if use_best_checkpoint:
@@ -222,32 +232,46 @@ def generate_model_predictions(
 
     print(f"Model loaded successfully")
 
-    # Load test dataset
-    print(f"Loading test dataset: {dataset_name}...")
-    test_ds = load_dataset(
-        dataset_name,
-        split_sizes=dict(train=0, test=n_test_docs),
-        seed=0
-    )["test"]
+    # Load dataset (either test or train2)
+    if use_test_results:
+        print(f"Loading test dataset: {dataset_name}...")
+        eval_ds = load_dataset(
+            dataset_name,
+            split_sizes=dict(train=0, test=n_test_docs),
+            seed=seed
+        )["test"]
+    else:
+        print(f"Loading train2 dataset (held-out training split): {dataset_name}...")
+        print(f"  Splitting {n_docs} training docs, using second half as train2...")
+        full_train = load_dataset(
+            dataset_name,
+            split_sizes=dict(train=n_docs, test=0),
+            seed=seed
+        )["train"]
+
+        # Split train in half to get train2_ds (same as train_simple.py)
+        split_data = full_train.train_test_split(test_size=0.5, seed=seed)
+        eval_ds = split_data["test"]  # train2_ds is the "test" part of the split
+        print(f"  train2_ds: {len(eval_ds)} examples")
 
     # Get tokenizer and tokenize dataset
     print(f"Getting tokenizer for {model_size}...")
     tokenizer = get_tokenizer(model_size)
 
-    print(f"Tokenizing {len(test_ds)} examples...")
-    test_ds = tokenize_dataset(
-        test_ds,
+    print(f"Tokenizing {len(eval_ds)} examples...")
+    eval_ds = tokenize_dataset(
+        eval_ds,
         tokenizer=tokenizer,
         max_ctx=max_ctx
     )
 
-    print(f"Running inference on {len(test_ds)} examples...")
+    print(f"Running inference on {len(eval_ds)} examples...")
 
     # Run evaluation
     with torch.no_grad():
         predictions_ds = eval_model_acc(
             model=model,
-            ds=test_ds,
+            ds=eval_ds,
             eval_batch_size=batch_size,
             dataset_name=dataset_name
         )
@@ -308,7 +332,8 @@ def find_agreement_disagreement(
     weak_df = generate_model_predictions(
         weak_checkpoint_path,
         model_name=weak_name,
-        use_best_checkpoint=use_best_checkpoint
+        use_best_checkpoint=use_best_checkpoint,
+        use_test_results=use_test_results
     )
 
     # Generate strong model predictions
@@ -316,7 +341,8 @@ def find_agreement_disagreement(
     strong_df = generate_model_predictions(
         strong_checkpoint_path,
         model_name=strong_name,
-        use_best_checkpoint=use_best_checkpoint
+        use_best_checkpoint=use_best_checkpoint,
+        use_test_results=use_test_results
     )
 
     # Validate alignment
