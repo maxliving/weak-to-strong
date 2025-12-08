@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-Disagreement-Based Active Learning Experiment Runner
+Disagreement-Based Active Learning Experiment Runner (gpt2-medium weak model)
 
 This script runs experiments to test the hypothesis that disagreement-based
 label selection is more efficient than random selection for weak-to-strong
-generalization.
+generalization, using gpt2-medium as the weak model and gpt2-large as the
+strong model.
 
 Strategies tested:
-1. Baseline (existing): 100% weak labels
+1. Baseline (existing): 100% gpt2-medium weak labels
 2. Random 25% (existing): 1,179 random GT labels
 3. Disagreement 50%: 590 GT labels on highest disagreements
 4. Disagreement 100%: 1,179 GT labels on highest disagreements
@@ -33,13 +34,13 @@ WANDB_AVAILABLE = True
 
 WANDB_ENTITY = "maxliving-personal"
 WANDB_PROJECT = "weak-to-strong-mixing"
-DISAGREEMENT_FILE = "./agreement_analysis/gpt2--3danjilx_vs_gpt2-large-mr0.0--5q0356oi/disagreement_rankings.csv"
+DISAGREEMENT_FILE = "./agreement_analysis/gpt2-medium_vs_gpt2-large-mr0.0/disagreement_rankings.csv"
 RESULTS_FOLDER = "./results"
-SWEEP_SUBFOLDER = "disagreement_experiment"
+SWEEP_SUBFOLDER = "disagreement_experiment_gpt2medium"
 
-# Weak labels path from the baseline gpt2 run (Run ID: 3danjilx)
-# This should be the path to the weak_labels directory from the ground truth gpt2 run
-WEAK_LABELS_PATH = "/lambda/nfs/us-south3-fs/weak-to-strong/results/default/bs=32-dn=boolq-e=4-ee=200-lp=0-l=xent-l=5e-05-ls=cosi_anne-mc=1024-md=0.001-mxr=0.0-mxs=sample-ms=gpt2-nd=20000-ntd=10000-o=adam-s=0-twd=0/weak_labels"
+# Weak labels path from the baseline gpt2-medium run (Run ID: irr7og8d)
+# This should be the path to the weak_labels directory from the ground truth gpt2-medium run
+WEAK_LABELS_PATH = "./results/default/bs=32-dn=boolq-e=4-ee=100-lp=0-l=xent-l=5e-05-ls=cosi_anne-mc=1024-md=0.0-mxr=1.0-mxs=sample-ms=gpt2-medium-nd=20000-ntd=10000-o=adam-s=0-twd=0/weak_labels"
 
 # Labeling budgets to test
 LABELING_BUDGETS = [
@@ -145,6 +146,7 @@ def check_existing_runs() -> Dict[int, Optional[str]]:
                     config.get('model_size') == TRAIN_PARAMS['model_size'],
                     config.get('epochs') == TRAIN_PARAMS['epochs'],
                     config.get('seed') == TRAIN_PARAMS['seed'],
+                    config.get('sweep_subfolder') == SWEEP_SUBFOLDER,  # Ensure we match the correct weak model
                 ])
 
                 if matches:
