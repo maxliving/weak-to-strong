@@ -178,7 +178,7 @@ def build_train_command(budget: int) -> List[str]:
         Command as list of strings
     """
     cmd = [
-        'python', 'train_simple.py',
+        'python', '-u', 'train_simple.py',  # -u for unbuffered output
         f'--ds_name={TRAIN_PARAMS["ds_name"]}',
         f'--n_docs={TRAIN_PARAMS["n_docs"]}',
         f'--n_test_docs={TRAIN_PARAMS["n_test_docs"]}',
