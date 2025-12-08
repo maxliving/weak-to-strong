@@ -261,7 +261,18 @@ def run_experiment(budget: int, log_file: Path) -> bool:
         return success
 
     except Exception as e:
-        print(f"\n✗ Error running experiment budget={budget}: {e}")
+        error_msg = f"\n✗ Error running experiment budget={budget}: {e}"
+        print(error_msg)
+
+        # Log error to file
+        try:
+            with open(log_file, 'a') as f:
+                f.write(f"\n{'='*80}\n")
+                f.write(f"ERROR: {error_msg}\n")
+                f.write(f"{'='*80}\n\n")
+        except:
+            pass
+
         return False
 
 
@@ -347,6 +358,12 @@ def main():
         print(f"\n[{i}/{len(runs_to_execute)}] Starting experiment with budget={budget}")
         success = run_experiment(budget, log_file)
         results[budget] = success
+
+        # Stop immediately on failure
+        if not success:
+            print(f"\n✗ Experiment budget={budget} FAILED - stopping execution")
+            print(f"Full log: {log_file}")
+            sys.exit(1)
 
     # Summary
     print()
