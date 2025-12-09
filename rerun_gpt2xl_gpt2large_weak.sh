@@ -39,7 +39,7 @@ echo ""
 
 # Run mix_ratio=0.0
 echo "Running mix_ratio=0.0..."
-CUDA_VISIBLE_DEVICES=4,5,6,7 python train_simple.py \
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True CUDA_VISIBLE_DEVICES=4,5 python train_simple.py \
     --model_size="$STRONG_MODEL" \
     --ds_name="$DATASET" \
     --weak_labels_path="$WEAK_LABELS_PATH" \
@@ -57,7 +57,7 @@ CUDA_VISIBLE_DEVICES=4,5,6,7 python train_simple.py \
 
 echo ""
 echo "Running mix_ratio=0.25..."
-CUDA_VISIBLE_DEVICES=4,5,6,7 python train_simple.py \
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True CUDA_VISIBLE_DEVICES=4,5 python train_simple.py \
     --model_size="$STRONG_MODEL" \
     --ds_name="$DATASET" \
     --weak_labels_path="$WEAK_LABELS_PATH" \
@@ -75,7 +75,7 @@ CUDA_VISIBLE_DEVICES=4,5,6,7 python train_simple.py \
 
 echo ""
 echo "Running mix_ratio=0.5..."
-CUDA_VISIBLE_DEVICES=4,5,6,7 python train_simple.py \
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True CUDA_VISIBLE_DEVICES=4,5,6,7 python train_simple.py \
     --model_size="$STRONG_MODEL" \
     --ds_name="$DATASET" \
     --weak_labels_path="$WEAK_LABELS_PATH" \
@@ -93,7 +93,7 @@ CUDA_VISIBLE_DEVICES=4,5,6,7 python train_simple.py \
 
 echo ""
 echo "Running mix_ratio=0.75..."
-CUDA_VISIBLE_DEVICES=4,5,6,7 python train_simple.py \
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True CUDA_VISIBLE_DEVICES=4,5,6,7 python train_simple.py \
     --model_size="$STRONG_MODEL" \
     --ds_name="$DATASET" \
     --weak_labels_path="$WEAK_LABELS_PATH" \
